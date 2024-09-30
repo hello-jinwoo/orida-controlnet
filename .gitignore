@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# VSCode
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# environment
+.env
+
+# backup
+*.bak
+*.swp
+
+# wandb
+wandb/
+
+# output
+output*/
+
+# etc
+train_data_samples/
