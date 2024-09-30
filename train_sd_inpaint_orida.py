@@ -1282,16 +1282,6 @@ def main(args):
                 # Get the text embedding for conditioning
                 encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
 
-                # controlnet_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
-
-                # down_block_res_samples, mid_block_res_sample = controlnet(
-                #     noisy_latents,
-                #     timesteps,
-                #     encoder_hidden_states=encoder_hidden_states,
-                #     controlnet_cond=controlnet_image,
-                #     return_dict=False,
-                # )
-
                 # Predict the noise residual
                 tgt_pos_mask = F.interpolate(batch["conditioning_pixel_values"][:, 0:1].to(dtype=weight_dtype), size=(noisy_latents.shape[2], noisy_latents.shape[3]), mode='bilinear', align_corners=False)
                 ################################# inpint pipeline #################################
