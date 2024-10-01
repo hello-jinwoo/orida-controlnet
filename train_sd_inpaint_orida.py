@@ -222,36 +222,18 @@ def log_validation(
     image_logs = []
     inference_ctx = contextlib.nullcontext() if is_final_validation else torch.autocast("cuda")
 
-    validation_src_images = sorted([f for f in os.listdir(validation_src_dir) if ".jpg" in f  and "mask" not in f and f[0] != "."])
     validation_tgt_images = sorted([f for f in os.listdir(validation_tgt_dir) if ".jpg" in f and "_0.jpg" not in f and f[0] != "."])
-    assert len(validation_src_images) == len(validation_tgt_images)
 
-    for validation_src_image, validation_tgt_image in zip(validation_src_images, validation_tgt_images):
+    for validation_tgt_image in validation_tgt_images:
         validation_prompt = ""
 
         validation_bg_image = f"{validation_tgt_dir}/{validation_tgt_image.split('.jpg')[0][:-2]}_0.jpg"
-        validation_src_mask = f"{validation_src_dir}/{validation_src_image.split('.jpg')[0]}_mask.jpg"
-        validation_src_bbox = f"{validation_src_dir}/{validation_src_image.split('.jpg')[0]}_bbox.txt"
-        validation_tgt_bbox = f"{validation_tgt_dir}/{validation_tgt_image.split('.jpg')[0]}_bbox.txt"
-        validation_src_image = f"{validation_src_dir}/{validation_src_image}"
+        validation_tgt_mask = f"{validation_tgt_dir}/{validation_tgt_image.split('.jpg')[0]}_mask.jpg"
         validation_tgt_image = f"{validation_tgt_dir}/{validation_tgt_image}"
         
-        validation_src_image = Image.open(validation_src_image).convert("RGB").resize((args.resolution, args.resolution), resample=Image.BILINEAR)
         validation_tgt_image = Image.open(validation_tgt_image).convert("RGB").resize((args.resolution, args.resolution), resample=Image.BILINEAR)
         validation_bg_image = Image.open(validation_bg_image).convert("RGB").resize((args.resolution, args.resolution), resample=Image.BILINEAR)
-        validation_src_mask = Image.open(validation_src_mask).convert("RGB").resize((args.resolution, args.resolution))
-
-        with open(validation_src_bbox, 'r') as f:
-            validation_src_bbox = f.read().strip()
-        with open(validation_tgt_bbox, 'r') as f:
-            validation_tgt_bbox = f.read().strip()
-        validation_tgt_mask = reshape_image_to_tgt_pos(validation_src_mask, validation_src_bbox, validation_tgt_bbox, args.resolution)
-
-        validation_bg_image_np = np.array(validation_bg_image)
-        validation_src_image_reshaped_np = np.array(reshape_image_to_tgt_pos(validation_src_image, validation_src_bbox, validation_tgt_bbox, args.resolution))
-        validation_tgt_mask_np = np.array(validation_tgt_mask)
-        validation_input_image_np = np.where(validation_tgt_mask_np > 1, validation_src_image_reshaped_np, validation_bg_image_np)
-        validation_input_image = Image.fromarray(validation_input_image_np)
+        validation_tgt_mask = Image.open(validation_tgt_mask).convert("RGB").resize((args.resolution, args.resolution))
         
         images1 = []
         images2 = []
@@ -270,32 +252,29 @@ def log_validation(
                     init_timestep=0, # default
                     prompt=validation_prompt, 
                     # image=validation_input_image, 
-                    image=validation_tgt_image, # tgt_image (image w/ object) as input_image
+                    image=validation_bg_image, # tgt_image (image w/ object) as input_image
                     mask_image=validation_tgt_mask,
                     generator=generator
                 ).images[0]
-                image2 = pipeline(
-                    num_inference_steps=args.validation_num_inference_steps,
-                    init_timestep=args.validation_init_timestep, # Customized part
-                    prompt=validation_prompt, 
-                    # image=validation_input_image, 
-                    image=validation_tgt_image, # tgt_image (image w/ object) as input_image
-                    mask_image=validation_tgt_mask,
-                    generator=generator
-                ).images[0]
+                # image2 = pipeline(
+                #     num_inference_steps=args.validation_num_inference_steps,
+                #     init_timestep=args.validation_init_timestep, # Customized part
+                #     prompt=validation_prompt, 
+                #     # image=validation_input_image, 
+                #     image=validation_bg_image, # tgt_image (image w/ object) as input_image
+                #     mask_image=validation_tgt_mask,
+                #     generator=generator
+                # ).images[0]
             
             images1.append(image1)
-            images2.append(image2)
+            # images2.append(image2)
 
         image_logs.append(
             {"images1": images1,
-             "images2": images2,
-             "validation_bg_image": validation_bg_image, 
-             "validation_src_image": validation_src_image, 
+            #  "images2": images2,
+             "validation_bg_image": validation_bg_image,  
              "validation_tgt_image": validation_tgt_image, 
-             "validation_input_image": validation_input_image,
-            #  "validation_src_mask": validation_src_mask,
-            #  "validation_tgt_mask": validation_tgt_mask,
+             "validation_tgt_mask": validation_tgt_mask, 
              "validation_prompt": validation_prompt}
         )
 
@@ -304,27 +283,21 @@ def log_validation(
         if tracker.name == "tensorboard":
             for log in image_logs:
                 images1 = log["images1"]
-                images2 = log["images2"]
+                # images2 = log["images2"]
                 validation_bg_image = log["validation_bg_image"]
-                validation_src_image = log["validation_src_image"]
                 validation_tgt_image = log["validation_tgt_image"]
-                validation_input_image = log["validation_input_image"]
-                # validation_src_mask = log["validation_src_mask"]
-                # validation_tgt_mask = log["validation_tgt_mask"]
+                validation_tgt_mask = log["validation_tgt_mask"]
                 validation_prompt = log["validation_prompt"]
 
                 formatted_images = []
                 formatted_images.append(np.asarray(validation_bg_image))
-                formatted_images.append(np.asarray(validation_src_image))
                 formatted_images.append(np.asarray(validation_tgt_image))
-                formatted_images.append(np.asarray(validation_input_image))
-                # formatted_images.append(np.asarray(validation_src_mask))
-                # formatted_images.append(np.asarray(validation_tgt_mask))
+                formatted_images.append(np.asarray(validation_tgt_mask))
 
                 for image1 in images1:
                     formatted_images.append(np.asarray(image1))
-                for image2 in images2:
-                    formatted_images.append(np.asarray(image2))
+                # for image2 in images2:
+                #     formatted_images.append(np.asarray(image2))
 
                 formatted_images = np.stack(formatted_images)
 
@@ -334,28 +307,22 @@ def log_validation(
 
             for log in image_logs:
                 images1 = log["images1"]
-                images2 = log["images2"]
+                # images2 = log["images2"]
                 validation_bg_image = log["validation_bg_image"]
-                validation_src_image = log["validation_src_image"]
                 validation_tgt_image = log["validation_tgt_image"]
-                validation_input_image = log["validation_input_image"]
-                # validation_src_mask = log["validation_src_mask"]
-                # validation_tgt_mask = log["validation_tgt_mask"]
+                validation_tgt_mask = log["validation_tgt_mask"]
                 validation_prompt = log["validation_prompt"]
 
                 formatted_images.append(wandb.Image(validation_bg_image, caption="validation_bg_image"))
-                formatted_images.append(wandb.Image(validation_src_image, caption="validation_src_image"))
                 formatted_images.append(wandb.Image(validation_tgt_image, caption="validation_tgt_image"))
-                formatted_images.append(wandb.Image(validation_input_image, caption="validation_input_image"))
-                # formatted_images.append(wandb.Image(validation_src_mask, caption="validation_src_mask"))
-                # formatted_images.append(wandb.Image(validation_tgt_mask, caption="validation_tgt_mask"))
+                formatted_images.append(wandb.Image(validation_tgt_mask, caption="validation_tgt_mask"))
 
                 for image1 in images1:
                     image1 = wandb.Image(image1, caption=f"init_timestep=0 / Caption='{validation_prompt}'")
                     formatted_images.append(image1)
-                for image2 in images2:
-                    image2 = wandb.Image(image2, caption=f"init_timestep={args.validation_init_timestep} / Caption='{validation_prompt}'")
-                    formatted_images.append(image2)
+                # for image2 in images2:
+                #     image2 = wandb.Image(image2, caption=f"init_timestep={args.validation_init_timestep} / Caption='{validation_prompt}'")
+                #     formatted_images.append(image2)
 
             tracker.log({tracker_key: formatted_images})
         else:
@@ -812,65 +779,27 @@ def make_train_dataset(args, tokenizer, accelerator):
 
     def get_image_paths(root_dir):
         image_paths = []
-        mask_paths = []
-        bbox_paths = []
         for obj_category in os.listdir(root_dir):
             obj_category_path = os.path.join(root_dir, obj_category)
-            # scenario = "factual_counterfactual"
             fcf_path = os.path.join(obj_category_path, "factual_counterfactual")
-            fo_path = os.path.join(obj_category_path, "factual_only")
             for tgt_instance_id in os.listdir(fcf_path):
                 tgt_instance_path = os.path.join(fcf_path, tgt_instance_id)
                 tgt_images_dir = os.path.join(tgt_instance_path, "images")
-                tgt_bbox_dir = os.path.join(tgt_instance_path, "annotations", "bbox")
+                tgt_mask_dir = os.path.join(tgt_instance_path, "annotations", "masks")
                 tgt_i = random.randint(1,4)
                 for image_file in os.listdir(tgt_images_dir):
                     if image_file.endswith("_0.jpg"):
                         bg_img_path = os.path.join(tgt_images_dir, image_file)
                     if image_file.endswith(f"_{tgt_i}.jpg"):
                         tgt_img_path = os.path.join(tgt_images_dir, image_file)
-                        tgt_pos_bbox_path = os.path.join(tgt_bbox_dir, image_file.replace(f"_{tgt_i}.jpg", f"_{tgt_i}_bbox.txt"))
-                
-                # src from factual_counterfactual
-                for src_instance_id in os.listdir(fcf_path):
-                    src_instance_path = os.path.join(fcf_path, src_instance_id)
-                    src_obj_images_dir = os.path.join(src_instance_path, "images")
-                    src_bbox_dir = os.path.join(src_instance_path, "annotations", "bbox")
-                    src_masks_dir = os.path.join(src_instance_path, "annotations", "masks")
-                    src_i = random.randint(1,4) # it can be full iteration -> for src_i in range(1,5)
-                    for image_file in os.listdir(src_obj_images_dir):
-                        if image_file.endswith(f"_{src_i}.jpg"):
-                            src_obj_img_path = os.path.join(src_obj_images_dir, image_file)
-                            src_obj_bbox_path = os.path.join(src_bbox_dir, image_file.replace(f".jpg", f"_bbox.txt"))
-                            src_obj_mask_path = os.path.join(src_masks_dir, image_file.replace(f".jpg", f"_mask.jpg"))
-                            image_paths.append({
-                                "bg_img_path": bg_img_path,
-                                "tgt_pos_bbox_path": tgt_pos_bbox_path,
-                                "tgt_img_path": tgt_img_path,
-                                "src_obj_img_path": src_obj_img_path,
-                                "src_obj_bbox_path": src_obj_bbox_path,
-                                "src_obj_mask_path": src_obj_mask_path,
-                                "text": "", # TODO: [Validation] sanity check needed
-                                "tgt_size": args.resolution,
-                            })
-                # src from factual_only
-                src_obj_images_dir = os.path.join(fo_path, "images")
-                src_obj_bbox_dir = os.path.join(fo_path, "annotations", "bbox")
-                src_obj_masks_dir = os.path.join(fo_path, "annotations", "masks")
-                for image_file in os.listdir(src_obj_images_dir):
-                    src_obj_img_path = os.path.join(src_obj_images_dir, image_file)
-                    src_obj_bbox_path = os.path.join(src_obj_bbox_dir, image_file.replace(".jpg", "_bbox.txt"))
-                    src_obj_mask_path = os.path.join(src_obj_masks_dir, image_file.replace(".jpg", "_mask.jpg"))
-                    image_paths.append({
-                        "bg_img_path": bg_img_path,
-                        "tgt_pos_bbox_path": tgt_pos_bbox_path,
-                        "tgt_img_path": tgt_img_path,
-                        "src_obj_img_path": src_obj_img_path,
-                        "src_obj_bbox_path": src_obj_bbox_path,
-                        "src_obj_mask_path": src_obj_mask_path,
-                        "text": "", # TODO: [Validation] sanity check needed
-                        "tgt_size": args.resolution,
-                    })
+                        tgt_obj_mask_path = os.path.join(tgt_mask_dir, image_file.replace(f".jpg", f"_mask.jpg"))
+                image_paths.append({
+                    "bg_img_path": bg_img_path,
+                    "tgt_img_path": tgt_img_path,
+                    "tgt_obj_mask_path": tgt_obj_mask_path,
+                    "text": "", # TODO: [Validation] sanity check needed
+                    "tgt_size": args.resolution,
+                })
         return image_paths
 
     def tokenize_captions(examples, is_train=True):
@@ -896,7 +825,6 @@ def make_train_dataset(args, tokenizer, accelerator):
 
         processed_examples = dict()
         processed_examples["input_pixel_values"] = []
-        processed_examples["bg_pixel_values"] = []
         processed_examples["output_pixel_values"] = []
         processed_examples["conditioning_pixel_values"] = []
         processed_examples["input_ids"] = []
@@ -904,37 +832,14 @@ def make_train_dataset(args, tokenizer, accelerator):
         img_len = examples["tgt_size"][0]
         bs = len(examples['bg_img_path'])
         for i in range(bs):
-            bg_img = Image.open(examples["bg_img_path"][i]).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
+            in_img = Image.open(examples["bg_img_path"][i]).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
             tgt_img = Image.open(examples["tgt_img_path"][i]).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
-            src_obj_img = Image.open(examples["src_obj_img_path"][i]).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
-            src_obj_mask = Image.open(examples["src_obj_mask_path"][i]).convert("L").resize((img_len, img_len))
-
-            # get annotations
-            with open(examples["tgt_pos_bbox_path"][i], 'r') as f:
-                tgt_pos_bbox = f.read().strip()
-            with open(examples["src_obj_bbox_path"][i], 'r') as f:
-                src_obj_bbox = f.read().strip()
-            tgt_pos_mask = reshape_image_to_tgt_pos(src_obj_mask, src_obj_bbox, tgt_pos_bbox, img_len)
-
-            # mix bg_img and src_obj img with tgt_pos_mask to make collage image
-            bg_img_np = np.array(bg_img)
-            reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_obj_img, src_obj_bbox, tgt_pos_bbox, img_len))
-            # reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_obj_img, src_obj_bbox, tgt_pos_bbox, img_len, margin=5))
-            tgt_mask_np = np.array(tgt_pos_mask)
-            # [Deprecated] Mask dilation
-            # kernel = np.ones((5, 5), np.uint8) 
-            # dilated_mask = cv2.dilate(cv2.GaussianBlur(tgt_mask_np, (5, 5), 0), kernel, iterations=1)
-            # dilated_mask = cv2.GaussianBlur(tgt_mask_np, (5, 5), 0)
-            # in_img_np = bg_img_np[mix_mask_np < 1e-2] + src_img_np[mix_mask_np > 1e-2]
-            # in_img_np = np.where(dilated_mask > 1e-2, reshaped_src_img_np, bg_img_np)
-            in_img_np = np.where(tgt_mask_np > 1e-2, reshaped_src_img_np, bg_img_np)
-            in_img = Image.fromarray(in_img_np)
+            tgt_obj_mask = Image.open(examples["tgt_obj_mask_path"][i]).convert("L").resize((img_len, img_len))
 
             processed_examples["input_pixel_values"].append(image_transforms(in_img))
-            processed_examples["bg_pixel_values"].append(image_transforms(bg_img))
             processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
             processed_examples["conditioning_pixel_values"].append(
-                conditioning_image_transforms(tgt_pos_mask),
+                conditioning_image_transforms(tgt_obj_mask),
                 # torch.cat([
                 #         conditioning_image_transforms(tgt_pos_mask),
                 #         image_transforms(src_obj_img), 
@@ -979,9 +884,6 @@ def collate_fn(examples):
     input_pixel_values = torch.stack([example["input_pixel_values"] for example in examples])
     input_pixel_values = input_pixel_values.to(memory_format=torch.contiguous_format).float()
 
-    bg_pixel_values = torch.stack([example["bg_pixel_values"] for example in examples])
-    bg_pixel_values = bg_pixel_values.to(memory_format=torch.contiguous_format).float()
-
     output_pixel_values = torch.stack([example["output_pixel_values"] for example in examples])
     output_pixel_values = output_pixel_values.to(memory_format=torch.contiguous_format).float()
 
@@ -992,7 +894,6 @@ def collate_fn(examples):
 
     return {
         "input_pixel_values": input_pixel_values,
-        "bg_pixel_values": bg_pixel_values,
         "output_pixel_values": output_pixel_values,
         "conditioning_pixel_values": conditioning_pixel_values,
         "input_ids": input_ids,
@@ -1310,8 +1211,7 @@ def main(args):
             with accelerator.accumulate(unet):
                 # Convert images to latent space
                 # latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # original
-                # latents = vae.encode(batch["input_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # ours - object insertion
-                latents = vae.encode(batch["output_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # ours - object removal (output_image w/ object as input image)
+                latents = vae.encode(batch["input_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # ours 
                 latents = latents * vae.config.scaling_factor
 
                 # Sample noise that we'll add to the latents
@@ -1332,7 +1232,7 @@ def main(args):
                 tgt_pos_mask = F.interpolate(batch["conditioning_pixel_values"][:, 0:1].to(dtype=weight_dtype), size=(noisy_latents.shape[2], noisy_latents.shape[3]), mode='bilinear', align_corners=False)
                 # ################################# inpaint pipeline #################################
                 # masked_image = batch["input_pixel_values"].to(dtype=weight_dtype) * (batch["conditioning_pixel_values"] < 0.5) # object insertion
-                masked_image = batch["output_pixel_values"].to(dtype=weight_dtype) * (batch["conditioning_pixel_values"] < 0.5) # object removal
+                masked_image = batch["input_pixel_values"].to(dtype=weight_dtype) * (batch["conditioning_pixel_values"] < 0.5) # object removal
                 masked_image_latents = vae.encode(masked_image).latent_dist.sample() * vae.config.scaling_factor
                 latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, masked_image_latents], dim=1) # inpaint
                 # ###################################################################################
@@ -1361,8 +1261,7 @@ def main(args):
                 # original to here
                 # ↓↓↓ code changed ↓↓↓
                 # ours from here
-                # target_latents = vae.encode(batch["output_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # object insertion
-                target_latents = vae.encode(batch["bg_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # object removal (bg image as target)
+                target_latents = vae.encode(batch["output_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
                 target_latents = target_latents * vae.config.scaling_factor
 
                 '''
