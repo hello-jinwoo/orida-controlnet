@@ -735,7 +735,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--validation_num_inference_steps", # TODO: edit the description
         type=int,
-        default=None,
+        default=20,
         help=(
             ""
         ),
@@ -743,7 +743,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--validation_init_timestep", # TODO: edit the description
         type=int,
-        default=None,
+        default=0,
         help=(
             ""
         ),
