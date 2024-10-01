@@ -273,7 +273,8 @@ def log_validation(
                     num_inference_steps=args.validation_num_inference_steps,
                     init_timestep=0, # default
                     prompt=validation_prompt, 
-                    image=validation_input_image, 
+                    # image=validation_input_image, # 323 or 321
+                    image=validation_bg_image, # 123
                     mask_image=validation_tgt_mask,
                     # masked_image_latents=validation_masked_image_latents,
                     masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
@@ -284,7 +285,8 @@ def log_validation(
                     num_inference_steps=args.validation_num_inference_steps,
                     init_timestep=args.validation_init_timestep, # Customized part
                     prompt=validation_prompt, 
-                    image=validation_input_image, 
+                    # image=validation_input_image, # 323 or 321
+                    image=validation_bg_image, # 123
                     mask_image=validation_tgt_mask,
                     # masked_image_latents=validation_masked_image_latents,
                     masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
@@ -904,6 +906,7 @@ def make_train_dataset(args, tokenizer, accelerator):
 
         processed_examples = dict()
         processed_examples["input_pixel_values"] = []
+        processed_examples["bg_pixel_values"] = [] # only for inpaint123 
         processed_examples["output_pixel_values"] = []
         processed_examples["conditioning_pixel_values"] = []
         processed_examples["input_ids"] = []
@@ -937,7 +940,8 @@ def make_train_dataset(args, tokenizer, accelerator):
             in_img_np = np.where(tgt_mask_np > 1e-2, reshaped_src_img_np, bg_img_np)
             in_img = Image.fromarray(in_img_np)
 
-            processed_examples["input_pixel_values"].append(image_transforms(in_img))
+            processed_examples["input_pixel_values"].append(image_transforms(bg_img))
+            processed_examples["bg_pixel_values"].append(image_transforms(in_img))
             processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
             processed_examples["conditioning_pixel_values"].append(
                 conditioning_image_transforms(tgt_pos_mask),
@@ -985,6 +989,10 @@ def collate_fn(examples):
     input_pixel_values = torch.stack([example["input_pixel_values"] for example in examples])
     input_pixel_values = input_pixel_values.to(memory_format=torch.contiguous_format).float()
 
+    # only for inpaint123
+    bg_pixel_values = torch.stack([example["bg_pixel_values"] for example in examples])
+    bg_pixel_values = bg_pixel_values.to(memory_format=torch.contiguous_format).float()
+
     output_pixel_values = torch.stack([example["output_pixel_values"] for example in examples])
     output_pixel_values = output_pixel_values.to(memory_format=torch.contiguous_format).float()
 
@@ -995,6 +1003,7 @@ def collate_fn(examples):
 
     return {
         "input_pixel_values": input_pixel_values,
+        "bg_pixel_values": bg_pixel_values, # only for inpaint123
         "output_pixel_values": output_pixel_values,
         "conditioning_pixel_values": conditioning_pixel_values,
         "input_ids": input_ids,
@@ -1315,6 +1324,10 @@ def main(args):
                 latents = vae.encode(batch["input_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # ours
                 latents = latents * vae.config.scaling_factor
 
+                # only for inpain123
+                bg_latents = vae.encode(batch["bg_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # only for inpaint123
+                bg_latents = bg_latents * vae.config.scaling_factor
+
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents) # original
                 bsz = latents.shape[0]
@@ -1324,19 +1337,20 @@ def main(args):
 
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
-                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps) # z_t
+                # noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps) # z_t # default!
+                noisy_latents = noise_scheduler.add_noise(bg_latents, noise, timesteps) # z_t # only for inpaint123
 
                 # Get the text embedding for conditioning
                 encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
 
                 # Predict the noise residual
-                tgt_pos_mask = F.interpolate(batch["conditioning_pixel_values"][:, 0:1].to(dtype=weight_dtype), size=(noisy_latents.shape[2], noisy_latents.shape[3]), mode='bilinear', align_corners=False)
+                tgt_pos_mask = F.interpolate(batch["conditioning_pixel_values"][:, 0:1].to(dtype=weight_dtype), size=(latents.shape[2], latents.shape[3]), mode='bilinear', align_corners=False)
                 # ################################# inpaint pipeline #################################
                 # masked_image = batch["input_pixel_values"].to(dtype=weight_dtype) * (batch["conditioning_pixel_values"] < 0.5)
                 # masked_image_latents = vae.encode(masked_image).latent_dist.sample() * vae.config.scaling_factor
-                # latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, masked_image_latents], dim=1) # inpaint
+                # latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, masked_image_latents], dim=1) # inpaint321
                 # ###################################################################################
-                latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, latents], dim=1) # ours
+                latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, latents], dim=1) # inpaint323 or inpaint123
                 model_pred = unet(
                     latent_model_input,
                     timesteps,
