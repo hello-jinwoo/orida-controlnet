@@ -59,6 +59,9 @@ from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.image_processor import PipelineImageInput, VaeImageProcessor 
 
+##### Customized Part #####
+from custom_pipeline_stable_diffusion_inpaint import CustomStableDiffusionInpaintPipeline
+
 if is_wandb_available():
     import wandb
 
@@ -181,7 +184,7 @@ def log_validation(
     # pipeline = AutoPipelineForInpainting.from_pretrained(
     #     "runwayml/stable-diffusion-inpainting", torch_dtype=torch.float16, variant="fp16"
     # )
-    pipeline = StableDiffusionInpaintPipeline.from_pretrained(
+    pipeline = CustomStableDiffusionInpaintPipeline.from_pretrained(
         "runwayml/stable-diffusion-inpainting", torch_dtype=torch.float16, variant="fp16"
     )
     pipeline.enable_model_cpu_offload()
@@ -250,7 +253,12 @@ def log_validation(
         validation_input_image_np = np.where(validation_tgt_mask_np > 1, validation_src_image_reshaped_np, validation_bg_image_np)
         validation_input_image = Image.fromarray(validation_input_image_np)
 
-        images = []
+        # validation_masked_image = validation_input_image.copy()
+        # validation_masked_image.paste(0, (0, 0), validation_tgt_mask)
+        # validation_masked_image_latents = VaeImageProcessor().preprocess(validation_input_image).to(vae.device).latent_dist.sample() * vae.config.scaling_factor
+        
+        images1 = []
+        images2 = []
 
         for _ in range(args.num_validation_images):
             with inference_ctx:
@@ -261,19 +269,35 @@ def log_validation(
                 #     image=validation_input_image,
                 #     control_image=validation_tgt_mask,
                 # ).images[0]
-                image = pipeline(
-                    num_inference_steps=20,
+                image1 = pipeline(
+                    num_inference_steps=args.validation_num_inference_steps,
+                    init_timestep=0, # default
                     prompt=validation_prompt, 
                     image=validation_input_image, 
                     mask_image=validation_tgt_mask,
-                    # masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample(), 
+                    # masked_image_latents=validation_masked_image_latents,
+                    masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
                     # mask_image=Image.new("L", (args.resolution, args.resolution), 0), 
                     generator=generator
                 ).images[0]
-            images.append(image)
+                image2 = pipeline(
+                    num_inference_steps=args.validation_num_inference_steps,
+                    init_timestep=args.validation_init_timestep, # Customized part
+                    prompt=validation_prompt, 
+                    image=validation_input_image, 
+                    mask_image=validation_tgt_mask,
+                    # masked_image_latents=validation_masked_image_latents,
+                    masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
+                    # mask_image=Image.new("L", (args.resolution, args.resolution), 0), 
+                    generator=generator
+                ).images[0]
+            
+            images1.append(image1)
+            images2.append(image2)
 
         image_logs.append(
-            {"images": images,
+            {"images1": images1,
+             "images2": images2,
              "validation_bg_image": validation_bg_image, 
              "validation_src_image": validation_src_image, 
              "validation_tgt_image": validation_tgt_image, 
@@ -287,7 +311,8 @@ def log_validation(
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
             for log in image_logs:
-                images = log["images"]
+                images1 = log["images1"]
+                images2 = log["images2"]
                 validation_bg_image = log["validation_bg_image"]
                 validation_src_image = log["validation_src_image"]
                 validation_tgt_image = log["validation_tgt_image"]
@@ -304,8 +329,10 @@ def log_validation(
                 # formatted_images.append(np.asarray(validation_src_mask))
                 # formatted_images.append(np.asarray(validation_tgt_mask))
 
-                for image in images:
-                    formatted_images.append(np.asarray(image))
+                for image1 in images1:
+                    formatted_images.append(np.asarray(image1))
+                for image2 in images2:
+                    formatted_images.append(np.asarray(image2))
 
                 formatted_images = np.stack(formatted_images)
 
@@ -314,7 +341,8 @@ def log_validation(
             formatted_images = []
 
             for log in image_logs:
-                images = log["images"]
+                images1 = log["images1"]
+                images2 = log["images2"]
                 validation_bg_image = log["validation_bg_image"]
                 validation_src_image = log["validation_src_image"]
                 validation_tgt_image = log["validation_tgt_image"]
@@ -330,9 +358,12 @@ def log_validation(
                 # formatted_images.append(wandb.Image(validation_src_mask, caption="validation_src_mask"))
                 # formatted_images.append(wandb.Image(validation_tgt_mask, caption="validation_tgt_mask"))
 
-                for image in images:
-                    image = wandb.Image(image, caption=validation_prompt)
-                    formatted_images.append(image)
+                for image1 in images1:
+                    image1 = wandb.Image(image1, caption=f"init_timestep=0 / Caption='{validation_prompt}'")
+                    formatted_images.append(image1)
+                for image2 in images2:
+                    image2 = wandb.Image(image2, caption=f"init_timestep={args.validation_init_timestep} / Caption='{validation_prompt}'")
+                    formatted_images.append(image2)
 
             tracker.log({tracker_key: formatted_images})
         else:
@@ -702,6 +733,22 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--validation_num_inference_steps", # TODO: edit the description
+        type=int,
+        default=None,
+        help=(
+            ""
+        ),
+    )
+    parser.add_argument(
+        "--validation_init_timestep", # TODO: edit the description
+        type=int,
+        default=None,
+        help=(
+            ""
+        ),
+    )
+    parser.add_argument(
         "--num_validation_images",
         type=int,
         default=4,
@@ -1054,7 +1101,7 @@ def main(args):
                     weights.pop()
                     model = models[i]
 
-                    sub_dir = "model"
+                    sub_dir = "unet"
                     model.save_pretrained(os.path.join(output_dir, sub_dir))
 
                     i -= 1
