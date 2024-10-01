@@ -252,10 +252,6 @@ def log_validation(
         validation_tgt_mask_np = np.array(validation_tgt_mask)
         validation_input_image_np = np.where(validation_tgt_mask_np > 1, validation_src_image_reshaped_np, validation_bg_image_np)
         validation_input_image = Image.fromarray(validation_input_image_np)
-
-        # validation_masked_image = validation_input_image.copy()
-        # validation_masked_image.paste(0, (0, 0), validation_tgt_mask)
-        # validation_masked_image_latents = VaeImageProcessor().preprocess(validation_input_image).to(vae.device).latent_dist.sample() * vae.config.scaling_factor
         
         images1 = []
         images2 = []
@@ -273,22 +269,18 @@ def log_validation(
                     num_inference_steps=args.validation_num_inference_steps,
                     init_timestep=0, # default
                     prompt=validation_prompt, 
-                    image=validation_input_image, 
+                    # image=validation_input_image, 
+                    image=validation_tgt_image, # tgt_image (image w/ object) as input_image
                     mask_image=validation_tgt_mask,
-                    # masked_image_latents=validation_masked_image_latents,
-                    masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
-                    # mask_image=Image.new("L", (args.resolution, args.resolution), 0), 
                     generator=generator
                 ).images[0]
                 image2 = pipeline(
                     num_inference_steps=args.validation_num_inference_steps,
                     init_timestep=args.validation_init_timestep, # Customized part
                     prompt=validation_prompt, 
-                    image=validation_input_image, 
+                    # image=validation_input_image, 
+                    image=validation_tgt_image, # tgt_image (image w/ object) as input_image
                     mask_image=validation_tgt_mask,
-                    # masked_image_latents=validation_masked_image_latents,
-                    masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
-                    # mask_image=Image.new("L", (args.resolution, args.resolution), 0), 
                     generator=generator
                 ).images[0]
             
@@ -904,6 +896,7 @@ def make_train_dataset(args, tokenizer, accelerator):
 
         processed_examples = dict()
         processed_examples["input_pixel_values"] = []
+        processed_examples["bg_pixel_values"] = []
         processed_examples["output_pixel_values"] = []
         processed_examples["conditioning_pixel_values"] = []
         processed_examples["input_ids"] = []
@@ -938,6 +931,7 @@ def make_train_dataset(args, tokenizer, accelerator):
             in_img = Image.fromarray(in_img_np)
 
             processed_examples["input_pixel_values"].append(image_transforms(in_img))
+            processed_examples["bg_pixel_values"].append(image_transforms(bg_img))
             processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
             processed_examples["conditioning_pixel_values"].append(
                 conditioning_image_transforms(tgt_pos_mask),
@@ -985,6 +979,9 @@ def collate_fn(examples):
     input_pixel_values = torch.stack([example["input_pixel_values"] for example in examples])
     input_pixel_values = input_pixel_values.to(memory_format=torch.contiguous_format).float()
 
+    bg_pixel_values = torch.stack([example["bg_pixel_values"] for example in examples])
+    bg_pixel_values = bg_pixel_values.to(memory_format=torch.contiguous_format).float()
+
     output_pixel_values = torch.stack([example["output_pixel_values"] for example in examples])
     output_pixel_values = output_pixel_values.to(memory_format=torch.contiguous_format).float()
 
@@ -995,6 +992,7 @@ def collate_fn(examples):
 
     return {
         "input_pixel_values": input_pixel_values,
+        "bg_pixel_values": bg_pixel_values,
         "output_pixel_values": output_pixel_values,
         "conditioning_pixel_values": conditioning_pixel_values,
         "input_ids": input_ids,
@@ -1312,7 +1310,8 @@ def main(args):
             with accelerator.accumulate(unet):
                 # Convert images to latent space
                 # latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # original
-                latents = vae.encode(batch["input_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # ours
+                # latents = vae.encode(batch["input_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # ours - object insertion
+                latents = vae.encode(batch["output_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # ours - object removal (output_image w/ object as input image)
                 latents = latents * vae.config.scaling_factor
 
                 # Sample noise that we'll add to the latents
@@ -1332,11 +1331,12 @@ def main(args):
                 # Predict the noise residual
                 tgt_pos_mask = F.interpolate(batch["conditioning_pixel_values"][:, 0:1].to(dtype=weight_dtype), size=(noisy_latents.shape[2], noisy_latents.shape[3]), mode='bilinear', align_corners=False)
                 # ################################# inpaint pipeline #################################
-                # masked_image = batch["input_pixel_values"].to(dtype=weight_dtype) * (batch["conditioning_pixel_values"] < 0.5)
-                # masked_image_latents = vae.encode(masked_image).latent_dist.sample() * vae.config.scaling_factor
-                # latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, masked_image_latents], dim=1) # inpaint
+                # masked_image = batch["input_pixel_values"].to(dtype=weight_dtype) * (batch["conditioning_pixel_values"] < 0.5) # object insertion
+                masked_image = batch["output_pixel_values"].to(dtype=weight_dtype) * (batch["conditioning_pixel_values"] < 0.5) # object removal
+                masked_image_latents = vae.encode(masked_image).latent_dist.sample() * vae.config.scaling_factor
+                latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, masked_image_latents], dim=1) # inpaint
                 # ###################################################################################
-                latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, latents], dim=1) # ours
+                # latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, latents], dim=1) # ours
                 model_pred = unet(
                     latent_model_input,
                     timesteps,
@@ -1361,7 +1361,8 @@ def main(args):
                 # original to here
                 # ↓↓↓ code changed ↓↓↓
                 # ours from here
-                target_latents = vae.encode(batch["output_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                # target_latents = vae.encode(batch["output_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # object insertion
+                target_latents = vae.encode(batch["bg_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # object removal (bg image as target)
                 target_latents = target_latents * vae.config.scaling_factor
 
                 '''
