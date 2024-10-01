@@ -279,7 +279,7 @@ def log_validation(
                     masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
                     # mask_image=Image.new("L", (args.resolution, args.resolution), 0), 
                     generator=generator
-                ).images[0]
+                ).images1[0]
                 image2 = pipeline(
                     num_inference_steps=args.validation_num_inference_steps,
                     init_timestep=args.validation_init_timestep, # Customized part
@@ -290,7 +290,7 @@ def log_validation(
                     masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
                     # mask_image=Image.new("L", (args.resolution, args.resolution), 0), 
                     generator=generator
-                ).images[0]
+                ).images2[0]
             
             images1.append(image1)
             images2.append(image2)
@@ -1331,12 +1331,12 @@ def main(args):
 
                 # Predict the noise residual
                 tgt_pos_mask = F.interpolate(batch["conditioning_pixel_values"][:, 0:1].to(dtype=weight_dtype), size=(noisy_latents.shape[2], noisy_latents.shape[3]), mode='bilinear', align_corners=False)
-                ################################# inpint pipeline #################################
-                masked_image = batch["input_pixel_values"].to(dtype=weight_dtype) * (batch["conditioning_pixel_values"] < 0.5)
-                masked_image_latents = vae.encode(masked_image).latent_dist.sample() * vae.config.scaling_factor
-                latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, masked_image_latents], dim=1) # inpaint
-                ###################################################################################
-                # latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, latents], dim=1) # ours
+                # ################################# inpaint pipeline #################################
+                # masked_image = batch["input_pixel_values"].to(dtype=weight_dtype) * (batch["conditioning_pixel_values"] < 0.5)
+                # masked_image_latents = vae.encode(masked_image).latent_dist.sample() * vae.config.scaling_factor
+                # latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, masked_image_latents], dim=1) # inpaint
+                # ###################################################################################
+                latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, latents], dim=1) # ours
                 model_pred = unet(
                     latent_model_input,
                     timesteps,
