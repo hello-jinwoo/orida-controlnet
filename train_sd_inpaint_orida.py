@@ -279,7 +279,7 @@ def log_validation(
                     masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
                     # mask_image=Image.new("L", (args.resolution, args.resolution), 0), 
                     generator=generator
-                ).images1[0]
+                ).images[0]
                 image2 = pipeline(
                     num_inference_steps=args.validation_num_inference_steps,
                     init_timestep=args.validation_init_timestep, # Customized part
@@ -290,7 +290,7 @@ def log_validation(
                     masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
                     # mask_image=Image.new("L", (args.resolution, args.resolution), 0), 
                     generator=generator
-                ).images2[0]
+                ).images[0]
             
             images1.append(image1)
             images2.append(image2)
