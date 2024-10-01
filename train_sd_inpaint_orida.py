@@ -940,8 +940,8 @@ def make_train_dataset(args, tokenizer, accelerator):
             in_img_np = np.where(tgt_mask_np > 1e-2, reshaped_src_img_np, bg_img_np)
             in_img = Image.fromarray(in_img_np)
 
-            processed_examples["input_pixel_values"].append(image_transforms(bg_img))
-            processed_examples["bg_pixel_values"].append(image_transforms(in_img))
+            processed_examples["input_pixel_values"].append(image_transforms(in_img))
+            processed_examples["bg_pixel_values"].append(image_transforms(bg_img))
             processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
             processed_examples["conditioning_pixel_values"].append(
                 conditioning_image_transforms(tgt_pos_mask),
