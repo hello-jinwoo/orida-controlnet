@@ -222,7 +222,7 @@ def log_validation(
     image_logs = []
     inference_ctx = contextlib.nullcontext() if is_final_validation else torch.autocast("cuda")
 
-    validation_tgt_images = sorted([f for f in os.listdir(validation_tgt_dir) if ".jpg" in f and "_0.jpg" not in f and f[0] != "."])
+    validation_tgt_images = sorted([f for f in os.listdir(validation_tgt_dir) if ".jpg" in f and "_0.jpg" not in f and "mask" not in f and f[0] != "."])
 
     for validation_tgt_image in validation_tgt_images:
         validation_prompt = ""
