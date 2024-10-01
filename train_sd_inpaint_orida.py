@@ -222,47 +222,38 @@ def log_validation(
     image_logs = []
     inference_ctx = contextlib.nullcontext() if is_final_validation else torch.autocast("cuda")
 
-    validation_tgt_images = sorted([f for f in os.listdir(validation_tgt_dir) if ".jpg" in f and "_0.jpg" not in f and "mask" not in f and f[0] != "."])
+    validation_input_images = sorted([f for f in os.listdir(validation_tgt_dir) if ".jpg" in f and "_0.jpg" not in f and "mask" not in f and f[0] != "."])
 
-    for validation_tgt_image in validation_tgt_images:
+    for validation_input_image in validation_input_images:
         validation_prompt = ""
 
-        validation_bg_image = f"{validation_tgt_dir}/{validation_tgt_image.split('.jpg')[0][:-2]}_0.jpg"
-        validation_tgt_mask = f"{validation_tgt_dir}/{validation_tgt_image.split('.jpg')[0]}_mask.jpg"
-        validation_tgt_image = f"{validation_tgt_dir}/{validation_tgt_image}"
+        validation_bg_image = f"{validation_tgt_dir}/{validation_input_image.split('.jpg')[0][:-2]}_0.jpg"
+        validation_obj_mask = f"{validation_tgt_dir}/{validation_input_image.split('.jpg')[0]}_mask.jpg"
+        validation_input_image = f"{validation_tgt_dir}/{validation_input_image}"
         
-        validation_tgt_image = Image.open(validation_tgt_image).convert("RGB").resize((args.resolution, args.resolution), resample=Image.BILINEAR)
+        validation_input_image = Image.open(validation_input_image).convert("RGB").resize((args.resolution, args.resolution), resample=Image.BILINEAR)
         validation_bg_image = Image.open(validation_bg_image).convert("RGB").resize((args.resolution, args.resolution), resample=Image.BILINEAR)
-        validation_tgt_mask = Image.open(validation_tgt_mask).convert("RGB").resize((args.resolution, args.resolution))
+        validation_obj_mask = Image.open(validation_obj_mask).convert("RGB").resize((args.resolution, args.resolution))
         
         images1 = []
         images2 = []
 
         for _ in range(args.num_validation_images):
             with inference_ctx:
-                # image = pipeline(
-                #     validation_prompt,
-                #     num_inference_steps=20,
-                #     generator=generator,
-                #     image=validation_input_image,
-                #     control_image=validation_tgt_mask,
-                # ).images[0]
                 image1 = pipeline(
                     num_inference_steps=args.validation_num_inference_steps,
                     init_timestep=0, # default
                     prompt=validation_prompt, 
-                    # image=validation_input_image, 
-                    image=validation_bg_image, # tgt_image (image w/ object) as input_image
-                    mask_image=validation_tgt_mask,
+                    image=validation_input_image, 
+                    mask_image=validation_obj_mask,
                     generator=generator
                 ).images[0]
                 # image2 = pipeline(
                 #     num_inference_steps=args.validation_num_inference_steps,
                 #     init_timestep=args.validation_init_timestep, # Customized part
                 #     prompt=validation_prompt, 
-                #     # image=validation_input_image, 
-                #     image=validation_bg_image, # tgt_image (image w/ object) as input_image
-                #     mask_image=validation_tgt_mask,
+                #     image=validation_input_image, # tgt_image (image w/ object) as input_image
+                #     mask_image=validation_obj_mask,
                 #     generator=generator
                 # ).images[0]
             
@@ -273,8 +264,8 @@ def log_validation(
             {"images1": images1,
             #  "images2": images2,
              "validation_bg_image": validation_bg_image,  
-             "validation_tgt_image": validation_tgt_image, 
-             "validation_tgt_mask": validation_tgt_mask, 
+             "validation_input_image": validation_input_image, 
+             "validation_obj_mask": validation_obj_mask, 
              "validation_prompt": validation_prompt}
         )
 
@@ -285,14 +276,14 @@ def log_validation(
                 images1 = log["images1"]
                 # images2 = log["images2"]
                 validation_bg_image = log["validation_bg_image"]
-                validation_tgt_image = log["validation_tgt_image"]
-                validation_tgt_mask = log["validation_tgt_mask"]
+                validation_input_image = log["validation_input_image"]
+                validation_obj_mask = log["validation_obj_mask"]
                 validation_prompt = log["validation_prompt"]
 
                 formatted_images = []
                 formatted_images.append(np.asarray(validation_bg_image))
-                formatted_images.append(np.asarray(validation_tgt_image))
-                formatted_images.append(np.asarray(validation_tgt_mask))
+                formatted_images.append(np.asarray(validation_input_image))
+                formatted_images.append(np.asarray(validation_obj_mask))
 
                 for image1 in images1:
                     formatted_images.append(np.asarray(image1))
@@ -309,13 +300,13 @@ def log_validation(
                 images1 = log["images1"]
                 # images2 = log["images2"]
                 validation_bg_image = log["validation_bg_image"]
-                validation_tgt_image = log["validation_tgt_image"]
-                validation_tgt_mask = log["validation_tgt_mask"]
+                validation_input_image = log["validation_input_image"]
+                validation_obj_mask = log["validation_obj_mask"]
                 validation_prompt = log["validation_prompt"]
 
                 formatted_images.append(wandb.Image(validation_bg_image, caption="validation_bg_image"))
-                formatted_images.append(wandb.Image(validation_tgt_image, caption="validation_tgt_image"))
-                formatted_images.append(wandb.Image(validation_tgt_mask, caption="validation_tgt_mask"))
+                formatted_images.append(wandb.Image(validation_input_image, caption="validation_input_image"))
+                formatted_images.append(wandb.Image(validation_obj_mask, caption="validation_obj_mask"))
 
                 for image1 in images1:
                     image1 = wandb.Image(image1, caption=f"init_timestep=0 / Caption='{validation_prompt}'")
@@ -786,20 +777,21 @@ def make_train_dataset(args, tokenizer, accelerator):
                 tgt_instance_path = os.path.join(fcf_path, tgt_instance_id)
                 tgt_images_dir = os.path.join(tgt_instance_path, "images")
                 tgt_mask_dir = os.path.join(tgt_instance_path, "annotations", "masks")
-                tgt_i = random.randint(1,4)
-                for image_file in os.listdir(tgt_images_dir):
-                    if image_file.endswith("_0.jpg"):
-                        bg_img_path = os.path.join(tgt_images_dir, image_file)
-                    if image_file.endswith(f"_{tgt_i}.jpg"):
-                        tgt_img_path = os.path.join(tgt_images_dir, image_file)
-                        tgt_obj_mask_path = os.path.join(tgt_mask_dir, image_file.replace(f".jpg", f"_mask.jpg"))
-                image_paths.append({
-                    "bg_img_path": bg_img_path,
-                    "tgt_img_path": tgt_img_path,
-                    "tgt_obj_mask_path": tgt_obj_mask_path,
-                    "text": "", # TODO: [Validation] sanity check needed
-                    "tgt_size": args.resolution,
-                })
+                # tgt_i = random.randint(1,4)
+                for tgt_i in range(1, 6):
+                    for image_file in os.listdir(tgt_images_dir):
+                        if image_file.endswith("_0.jpg"):
+                            bg_img_path = os.path.join(tgt_images_dir, image_file)
+                        if image_file.endswith(f"_{tgt_i}.jpg"):
+                            input_img_path = os.path.join(tgt_images_dir, image_file)
+                            tgt_obj_mask_path = os.path.join(tgt_mask_dir, image_file.replace(f".jpg", f"_mask.jpg"))
+                    image_paths.append({
+                        "bg_img_path": bg_img_path,
+                        "input_img_path": input_img_path,
+                        "tgt_obj_mask_path": tgt_obj_mask_path,
+                        "text": "", # TODO: [Validation] sanity check needed
+                        "tgt_size": args.resolution,
+                    })
         return image_paths
 
     def tokenize_captions(examples, is_train=True):
@@ -832,12 +824,12 @@ def make_train_dataset(args, tokenizer, accelerator):
         img_len = examples["tgt_size"][0]
         bs = len(examples['bg_img_path'])
         for i in range(bs):
-            in_img = Image.open(examples["bg_img_path"][i]).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
-            tgt_img = Image.open(examples["tgt_img_path"][i]).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
+            bg_img = Image.open(examples["bg_img_path"][i]).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
+            input_img = Image.open(examples["input_img_path"][i]).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
             tgt_obj_mask = Image.open(examples["tgt_obj_mask_path"][i]).convert("L").resize((img_len, img_len))
 
-            processed_examples["input_pixel_values"].append(image_transforms(in_img))
-            processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
+            processed_examples["input_pixel_values"].append(image_transforms(input_img))
+            processed_examples["output_pixel_values"].append(image_transforms(bg_img))
             processed_examples["conditioning_pixel_values"].append(
                 conditioning_image_transforms(tgt_obj_mask),
                 # torch.cat([
