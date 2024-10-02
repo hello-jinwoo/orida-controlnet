@@ -181,13 +181,26 @@ def log_validation(
 ):
     logger.info("Running validation... ")
 
+    if not is_final_validation:
+        unet = accelerator.unwrap_model(unet)
+    else:
+        unet = UNet2DConditionModel.from_pretrained(args.output_dir, torch_dtype=weight_dtype)
+
     # pipeline = AutoPipelineForInpainting.from_pretrained(
     #     "runwayml/stable-diffusion-inpainting", torch_dtype=torch.float16, variant="fp16"
     # )
     pipeline = CustomStableDiffusionInpaintPipeline.from_pretrained(
-        "runwayml/stable-diffusion-inpainting", torch_dtype=torch.float16, variant="fp16"
+        "runwayml/stable-diffusion-inpainting", 
+        vae=vae,
+        text_encoder=text_encoder,
+        tokenizer=tokenizer,
+        unet=unet,
+        safety_checker=None,
+        revision=args.revision,
+        variant=args.variant,
+        torch_dtype=weight_dtype,
     )
-    pipeline.enable_model_cpu_offload()
+    # pipeline.enable_model_cpu_offload()
     # remove following line if xFormers is not installed or you have PyTorch 2.0 or higher installed
     pipeline.enable_xformers_memory_efficient_attention()
 
@@ -1332,7 +1345,6 @@ def main(args):
                             text_encoder,
                             tokenizer,
                             unet,
-                            # controlnet,
                             args,
                             accelerator,
                             weight_dtype,
@@ -1362,7 +1374,7 @@ def main(args):
                 vae=vae,
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
-                unet=unet,
+                unet=None,
                 # controlnet=None,
                 args=args,
                 accelerator=accelerator,
