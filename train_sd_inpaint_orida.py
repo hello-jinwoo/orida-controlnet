@@ -45,6 +45,7 @@ from diffusers import (
     AutoencoderKL,
     # ControlNetModel,
     DDPMScheduler,
+    # DDIMScheduler,
     # StableDiffusionControlNetPipeline,
     # StableDiffusionControlNetImg2ImgPipeline,
     AutoPipelineForInpainting,
@@ -204,7 +205,7 @@ def log_validation(
     # remove following line if xFormers is not installed or you have PyTorch 2.0 or higher installed
     pipeline.enable_xformers_memory_efficient_attention()
 
-    pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
+    # pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
 
@@ -270,8 +271,7 @@ def log_validation(
         # validation_masked_image.paste(0, (0, 0), validation_tgt_mask)
         # validation_masked_image_latents = VaeImageProcessor().preprocess(validation_input_image).to(vae.device).latent_dist.sample() * vae.config.scaling_factor
         
-        images1 = []
-        images2 = []
+        images = []
 
         for _ in range(args.num_validation_images):
             with inference_ctx:
@@ -282,35 +282,26 @@ def log_validation(
                 #     image=validation_input_image,
                 #     control_image=validation_tgt_mask,
                 # ).images[0]
-                image1 = pipeline(
-                    num_inference_steps=args.validation_num_inference_steps,
-                    init_timestep=0, # default
-                    prompt=validation_prompt, 
-                    image=validation_input_image, 
-                    mask_image=validation_tgt_mask,
-                    # masked_image_latents=validation_masked_image_latents,
-                    masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
-                    # mask_image=Image.new("L", (args.resolution, args.resolution), 0), 
-                    generator=generator
-                ).images[0]
-                image2 = pipeline(
-                    num_inference_steps=args.validation_num_inference_steps,
-                    init_timestep=args.validation_init_timestep, # Customized part
-                    prompt=validation_prompt, 
-                    image=validation_input_image, 
-                    mask_image=validation_tgt_mask,
-                    # masked_image_latents=validation_masked_image_latents,
-                    masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
-                    # mask_image=Image.new("L", (args.resolution, args.resolution), 0), 
-                    generator=generator
-                ).images[0]
+                if args.validation_init_timesteps == None:
+                    validation_init_timesteps = [int(args.validation_num_inference_steps * r) for r in [0, 0.2, 0.4, 0.6]]
+                else:
+                    validation_init_timesteps = [int(n) for n in args.validation_init_timesteps]
+                for validation_init_timestep in validation_init_timesteps:
+                    images.append(pipeline(
+                        num_inference_steps=args.validation_num_inference_steps,
+                        init_timestep=validation_init_timestep, # Customized part
+                        prompt=validation_prompt, 
+                        image=validation_input_image, 
+                        mask_image=validation_tgt_mask,
+                        # masked_image_latents=validation_masked_image_latents,
+                        masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
+                        # mask_image=Image.new("L", (args.resolution, args.resolution), 0), 
+                        generator=generator
+                    ).images[0])
             
-            images1.append(image1)
-            images2.append(image2)
 
         image_logs.append(
-            {"images1": images1,
-             "images2": images2,
+            {"images": images,
              "validation_bg_image": validation_bg_image, 
              "validation_src_image": validation_src_image, 
              "validation_tgt_image": validation_tgt_image, 
@@ -324,8 +315,7 @@ def log_validation(
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
             for log in image_logs:
-                images1 = log["images1"]
-                images2 = log["images2"]
+                images = log["images"]
                 validation_bg_image = log["validation_bg_image"]
                 validation_src_image = log["validation_src_image"]
                 validation_tgt_image = log["validation_tgt_image"]
@@ -335,17 +325,15 @@ def log_validation(
                 validation_prompt = log["validation_prompt"]
 
                 formatted_images = []
-                formatted_images.append(np.asarray(validation_bg_image))
+                # formatted_images.append(np.asarray(validation_bg_image))
                 formatted_images.append(np.asarray(validation_src_image))
                 formatted_images.append(np.asarray(validation_tgt_image))
                 formatted_images.append(np.asarray(validation_input_image))
                 # formatted_images.append(np.asarray(validation_src_mask))
                 # formatted_images.append(np.asarray(validation_tgt_mask))
 
-                for image1 in images1:
-                    formatted_images.append(np.asarray(image1))
-                for image2 in images2:
-                    formatted_images.append(np.asarray(image2))
+                for image in images:
+                    formatted_images.append(np.asarray(image))
 
                 formatted_images = np.stack(formatted_images)
 
@@ -354,8 +342,7 @@ def log_validation(
             formatted_images = []
 
             for log in image_logs:
-                images1 = log["images1"]
-                images2 = log["images2"]
+                images = log["images"]
                 validation_bg_image = log["validation_bg_image"]
                 validation_src_image = log["validation_src_image"]
                 validation_tgt_image = log["validation_tgt_image"]
@@ -364,19 +351,16 @@ def log_validation(
                 # validation_tgt_mask = log["validation_tgt_mask"]
                 validation_prompt = log["validation_prompt"]
 
-                formatted_images.append(wandb.Image(validation_bg_image, caption="validation_bg_image"))
+                # formatted_images.append(wandb.Image(validation_bg_image, caption="validation_bg_image"))
                 formatted_images.append(wandb.Image(validation_src_image, caption="validation_src_image"))
                 formatted_images.append(wandb.Image(validation_tgt_image, caption="validation_tgt_image"))
                 formatted_images.append(wandb.Image(validation_input_image, caption="validation_input_image"))
                 # formatted_images.append(wandb.Image(validation_src_mask, caption="validation_src_mask"))
                 # formatted_images.append(wandb.Image(validation_tgt_mask, caption="validation_tgt_mask"))
 
-                for image1 in images1:
-                    image1 = wandb.Image(image1, caption=f"init_timestep=0 / Caption='{validation_prompt}'")
-                    formatted_images.append(image1)
-                for image2 in images2:
-                    image2 = wandb.Image(image2, caption=f"init_timestep={args.validation_init_timestep} / Caption='{validation_prompt}'")
-                    formatted_images.append(image2)
+                for init_t, image in zip(validation_init_timesteps, images):
+                    image = wandb.Image(image, caption=f"init_timestep={init_t} / Caption='{validation_prompt}'")
+                    formatted_images.append(image)
 
             tracker.log({tracker_key: formatted_images})
         else:
@@ -754,7 +738,16 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
-        "--validation_init_timestep", # TODO: edit the description
+        "--validation_init_timesteps", # TODO: edit the description
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            ""
+        ),
+    )
+    parser.add_argument(
+        "--denoising_init_timestep", # TODO: edit the description
         type=int,
         default=0,
         help=(
@@ -832,8 +825,8 @@ def parse_args(input_args=None):
 def make_train_dataset(args, tokenizer, accelerator):
 
     def get_data_paths(root_dir):
+        data_list = []
         for obj_idx in os.listdir(root_dir):
-            data_list = []
             fcf_scene_list = []
             fo_scene_list = []
             obj_category_path = os.path.join(root_dir, obj_idx)
@@ -857,7 +850,7 @@ def make_train_dataset(args, tokenizer, accelerator):
                         "img_size": args.resolution,
                         "text": "",
                     })
-
+        random.shuffle(data_list)
         return data_list
 
     def tokenize_captions(examples, is_train=True):
@@ -892,31 +885,43 @@ def make_train_dataset(args, tokenizer, accelerator):
         bs = len(examples["img_size"])
         for i in range(bs):
             obj_idx = int(examples["obj_idx"][i])
+            # src
             src_scene_id = examples["src_scene_id"][i][:-1] + str(random.randint(0,4)) # isp augmentation
-            src_filename_base = f"{obj_idx:05}_{src_scene_id}"
-            if src_scene_id[0] == "0": # src fcf
-                src_pos_i = random.randint(1, 4)
-                src_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/images/{src_filename_base}_{src_pos_i}.jpg"
-                src_bbox_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/annotations/bbox/{src_filename_base}_{src_pos_i}_bbox.txt"
-                src_mask_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/annotations/masks/{src_filename_base}_{src_pos_i}_mask.jpg"
-            elif src_scene_id[0] == "1": # src fo
-                src_img_path = f"{root_dir}/{obj_idx}/factual_only/images/{src_filename_base}_1.jpg"
-                src_bbox_path = f"{root_dir}/{obj_idx}/factual_only/annotations/bbox/{src_filename_base}_1_bbox.txt"
-                src_mask_path = f"{root_dir}/{obj_idx}/factual_only/annotations/masks/{src_filename_base}_1_mask.jpg"
+            while True:
+                try:
+                    src_filename_base = f"{obj_idx:05}_{src_scene_id}"
+                    if src_scene_id[0] == "0": # src fcf
+                        src_pos_i = random.randint(1, 4)
+                        src_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/images/{src_filename_base}_{src_pos_i}.jpg"
+                        src_bbox_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/annotations/bbox/{src_filename_base}_{src_pos_i}_bbox.txt"
+                        src_mask_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/annotations/masks/{src_filename_base}_{src_pos_i}_mask.jpg"
+                    elif src_scene_id[0] == "1": # src fo
+                        src_img_path = f"{root_dir}/{obj_idx}/factual_only/images/{src_filename_base}_1.jpg"
+                        src_bbox_path = f"{root_dir}/{obj_idx}/factual_only/annotations/bbox/{src_filename_base}_1_bbox.txt"
+                        src_mask_path = f"{root_dir}/{obj_idx}/factual_only/annotations/masks/{src_filename_base}_1_mask.jpg"
+                    src_obj_img = Image.open(src_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
+                    break
+                except:
+                    src_scene_id = examples["src_scene_id"][i] # there may not exist other isp settings -> just use default isp 
+            # tgt
             tgt_scene_id = examples["tgt_scene_id"][i][:-1] + str(random.randint(0,4)) # isp augmentation
-            tgt_filename_base = f"{obj_idx:05}_{tgt_scene_id}"
-            # if tgt_scene_id[0] == "0": # tgt fcf
-            bg_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/images/{tgt_filename_base}_0.jpg"
-            tgt_pos_i = random.randint(1, 4)
-            tgt_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/images/{tgt_filename_base}_{tgt_pos_i}.jpg"
-            tgt_bbox_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/annotations/bbox/{tgt_filename_base}_{tgt_pos_i}_bbox.txt"
-            # tgt_mask_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/annotations/masks/{tgt_filename_base}_{tgt_pos_i}_mask.jpg"
-            tgt_scene_id = examples["tgt_scene_id"][i]
+            while True:
+                try:
+                    tgt_filename_base = f"{obj_idx:05}_{tgt_scene_id}"
+                    # if tgt_scene_id[0] == "0": # tgt fcf
+                    bg_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/images/{tgt_filename_base}_0.jpg"
+                    tgt_pos_i = random.randint(1, 4)
+                    tgt_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/images/{tgt_filename_base}_{tgt_pos_i}.jpg"
+                    tgt_bbox_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/annotations/bbox/{tgt_filename_base}_{tgt_pos_i}_bbox.txt"
+                    # tgt_mask_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/annotations/masks/{tgt_filename_base}_{tgt_pos_i}_mask.jpg"
+                    tgt_scene_id = examples["tgt_scene_id"][i]
+                    tgt_img = Image.open(tgt_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
+                    break
+                except:
+                    tgt_scene_id = examples["tgt_scene_id"][i] # there may not exist other isp settings -> just use default isp 
 
-            bg_img = Image.open(bg_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
-            tgt_img = Image.open(tgt_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
-            src_obj_img = Image.open(src_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
             src_obj_mask = Image.open(src_mask_path).convert("L").resize((img_len, img_len))
+            bg_img = Image.open(bg_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
 
             # get annotations
             with open(tgt_bbox_path, 'r') as f:
@@ -1314,7 +1319,9 @@ def main(args):
                 noise = torch.randn_like(latents) # original
                 bsz = latents.shape[0]
                 # Sample a random timestep for each image
-                timesteps = torch.randint(0, int(noise_scheduler.config.num_train_timesteps), (bsz,), device=latents.device)
+                # timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device) # original
+                T = int(noise_scheduler.config.num_train_timesteps / args.validation_num_inference_steps * (args.validation_num_inference_steps - args.denoising_init_timestep))
+                timesteps = torch.randint(0, T, (bsz,), device=latents.device)
                 timesteps = timesteps.long()
 
                 # Add noise to the latents according to the noise magnitude at each timestep
