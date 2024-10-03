@@ -831,68 +831,34 @@ def parse_args(input_args=None):
 
 def make_train_dataset(args, tokenizer, accelerator):
 
-    def get_image_paths(root_dir):
-        image_paths = []
-        mask_paths = []
-        bbox_paths = []
-        for obj_category in os.listdir(root_dir):
-            obj_category_path = os.path.join(root_dir, obj_category)
+    def get_data_paths(root_dir):
+        for obj_idx in os.listdir(root_dir):
+            data_list = []
+            fcf_scene_list = []
+            fo_scene_list = []
+            obj_category_path = os.path.join(root_dir, obj_idx)
             # scenario = "factual_counterfactual"
             fcf_path = os.path.join(obj_category_path, "factual_counterfactual")
             fo_path = os.path.join(obj_category_path, "factual_only")
-            for tgt_instance_id in os.listdir(fcf_path):
-                tgt_instance_path = os.path.join(fcf_path, tgt_instance_id)
-                tgt_images_dir = os.path.join(tgt_instance_path, "images")
-                tgt_bbox_dir = os.path.join(tgt_instance_path, "annotations", "bbox")
-                tgt_i = random.randint(1,4)
-                for image_file in os.listdir(tgt_images_dir):
-                    if image_file.endswith("_0.jpg"):
-                        bg_img_path = os.path.join(tgt_images_dir, image_file)
-                    if image_file.endswith(f"_{tgt_i}.jpg"):
-                        tgt_img_path = os.path.join(tgt_images_dir, image_file)
-                        tgt_pos_bbox_path = os.path.join(tgt_bbox_dir, image_file.replace(f"_{tgt_i}.jpg", f"_{tgt_i}_bbox.txt"))
-                
-                # src from factual_counterfactual
-                for src_instance_id in os.listdir(fcf_path):
-                    src_instance_path = os.path.join(fcf_path, src_instance_id)
-                    src_obj_images_dir = os.path.join(src_instance_path, "images")
-                    src_bbox_dir = os.path.join(src_instance_path, "annotations", "bbox")
-                    src_masks_dir = os.path.join(src_instance_path, "annotations", "masks")
-                    src_i = random.randint(1,4) # it can be full iteration -> for src_i in range(1,5)
-                    for image_file in os.listdir(src_obj_images_dir):
-                        if image_file.endswith(f"_{src_i}.jpg"):
-                            src_obj_img_path = os.path.join(src_obj_images_dir, image_file)
-                            src_obj_bbox_path = os.path.join(src_bbox_dir, image_file.replace(f".jpg", f"_bbox.txt"))
-                            src_obj_mask_path = os.path.join(src_masks_dir, image_file.replace(f".jpg", f"_mask.jpg"))
-                            image_paths.append({
-                                "bg_img_path": bg_img_path,
-                                "tgt_pos_bbox_path": tgt_pos_bbox_path,
-                                "tgt_img_path": tgt_img_path,
-                                "src_obj_img_path": src_obj_img_path,
-                                "src_obj_bbox_path": src_obj_bbox_path,
-                                "src_obj_mask_path": src_obj_mask_path,
-                                "text": "", # TODO: [Validation] sanity check needed
-                                "tgt_size": args.resolution,
-                            })
-                # src from factual_only
-                src_obj_images_dir = os.path.join(fo_path, "images")
-                src_obj_bbox_dir = os.path.join(fo_path, "annotations", "bbox")
-                src_obj_masks_dir = os.path.join(fo_path, "annotations", "masks")
-                for image_file in os.listdir(src_obj_images_dir):
-                    src_obj_img_path = os.path.join(src_obj_images_dir, image_file)
-                    src_obj_bbox_path = os.path.join(src_obj_bbox_dir, image_file.replace(".jpg", "_bbox.txt"))
-                    src_obj_mask_path = os.path.join(src_obj_masks_dir, image_file.replace(".jpg", "_mask.jpg"))
-                    image_paths.append({
-                        "bg_img_path": bg_img_path,
-                        "tgt_pos_bbox_path": tgt_pos_bbox_path,
-                        "tgt_img_path": tgt_img_path,
-                        "src_obj_img_path": src_obj_img_path,
-                        "src_obj_bbox_path": src_obj_bbox_path,
-                        "src_obj_mask_path": src_obj_mask_path,
-                        "text": "", # TODO: [Validation] sanity check needed
-                        "tgt_size": args.resolution,
+            for scene_id in os.listdir(fcf_path):
+                if scene_id[-1] == "0": # only one isp
+                    fcf_scene_list.append(scene_id)
+            for filename in os.listdir(os.path.join(fo_path, "images")):
+                _, scene_id, _ = filename.split("_")
+                if scene_id[-1] == "0": # only one isp
+                    fo_scene_list.append(scene_id)
+            for src_scene_id in fcf_scene_list+fo_scene_list:
+                for tgt_scene_id in fcf_scene_list:
+                    data_list.append({
+                        "root_dir": root_dir, 
+                        "obj_idx": obj_idx, 
+                        "src_scene_id": src_scene_id, 
+                        "tgt_scene_id": tgt_scene_id, 
+                        "img_size": args.resolution,
+                        "text": "",
                     })
-        return image_paths
+
+        return data_list
 
     def tokenize_captions(examples, is_train=True):
         captions = []
@@ -921,18 +887,41 @@ def make_train_dataset(args, tokenizer, accelerator):
         processed_examples["conditioning_pixel_values"] = []
         processed_examples["input_ids"] = []
 
-        img_len = examples["tgt_size"][0]
-        bs = len(examples['bg_img_path'])
+        img_len = examples["img_size"][0]
+        root_dir = examples["root_dir"][0]
+        bs = len(examples["img_size"])
         for i in range(bs):
-            bg_img = Image.open(examples["bg_img_path"][i]).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
-            tgt_img = Image.open(examples["tgt_img_path"][i]).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
-            src_obj_img = Image.open(examples["src_obj_img_path"][i]).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
-            src_obj_mask = Image.open(examples["src_obj_mask_path"][i]).convert("L").resize((img_len, img_len))
+            obj_idx = int(examples["obj_idx"][i])
+            src_scene_id = examples["src_scene_id"][i][:-1] + str(random.randint(0,4)) # isp augmentation
+            src_filename_base = f"{obj_idx:05}_{src_scene_id}"
+            if src_scene_id[0] == "0": # src fcf
+                src_pos_i = random.randint(1, 4)
+                src_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/images/{src_filename_base}_{src_pos_i}.jpg"
+                src_bbox_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/annotations/bbox/{src_filename_base}_{src_pos_i}_bbox.txt"
+                src_mask_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/annotations/masks/{src_filename_base}_{src_pos_i}_mask.jpg"
+            elif src_scene_id[0] == "1": # src fo
+                src_img_path = f"{root_dir}/{obj_idx}/factual_only/images/{src_filename_base}_1.jpg"
+                src_bbox_path = f"{root_dir}/{obj_idx}/factual_only/annotations/bbox/{src_filename_base}_1_bbox.txt"
+                src_mask_path = f"{root_dir}/{obj_idx}/factual_only/annotations/masks/{src_filename_base}_1_mask.jpg"
+            tgt_scene_id = examples["tgt_scene_id"][i][:-1] + str(random.randint(0,4)) # isp augmentation
+            tgt_filename_base = f"{obj_idx:05}_{tgt_scene_id}"
+            # if tgt_scene_id[0] == "0": # tgt fcf
+            bg_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/images/{tgt_filename_base}_0.jpg"
+            tgt_pos_i = random.randint(1, 4)
+            tgt_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/images/{tgt_filename_base}_{tgt_pos_i}.jpg"
+            tgt_bbox_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/annotations/bbox/{tgt_filename_base}_{tgt_pos_i}_bbox.txt"
+            # tgt_mask_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/annotations/masks/{tgt_filename_base}_{tgt_pos_i}_mask.jpg"
+            tgt_scene_id = examples["tgt_scene_id"][i]
+
+            bg_img = Image.open(bg_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
+            tgt_img = Image.open(tgt_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
+            src_obj_img = Image.open(src_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
+            src_obj_mask = Image.open(src_mask_path).convert("L").resize((img_len, img_len))
 
             # get annotations
-            with open(examples["tgt_pos_bbox_path"][i], 'r') as f:
+            with open(tgt_bbox_path, 'r') as f:
                 tgt_pos_bbox = f.read().strip()
-            with open(examples["src_obj_bbox_path"][i], 'r') as f:
+            with open(src_bbox_path, 'r') as f:
                 src_obj_bbox = f.read().strip()
             tgt_pos_mask = reshape_image_to_tgt_pos(src_obj_mask, src_obj_bbox, tgt_pos_bbox, img_len)
 
@@ -952,14 +941,7 @@ def make_train_dataset(args, tokenizer, accelerator):
 
             processed_examples["input_pixel_values"].append(image_transforms(in_img))
             processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
-            processed_examples["conditioning_pixel_values"].append(
-                conditioning_image_transforms(tgt_pos_mask),
-                # torch.cat([
-                #         conditioning_image_transforms(tgt_pos_mask),
-                #         image_transforms(src_obj_img), 
-                #         conditioning_image_transforms(src_obj_mask), 
-                #     ], dim=0)
-                )
+            processed_examples["conditioning_pixel_values"].append(conditioning_image_transforms(tgt_pos_mask))
             
         processed_examples["input_ids"] = tokenize_captions(examples) # TODO: [Validation] sanity check needed
 
@@ -982,8 +964,8 @@ def make_train_dataset(args, tokenizer, accelerator):
         ]
     )
     
-    image_paths = get_image_paths(args.train_data_dir)
-    dataset = Dataset.from_list(image_paths)
+    data_paths = get_data_paths(args.train_data_dir)
+    dataset = Dataset.from_list(data_paths)
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
@@ -1332,7 +1314,7 @@ def main(args):
                 noise = torch.randn_like(latents) # original
                 bsz = latents.shape[0]
                 # Sample a random timestep for each image
-                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
+                timesteps = torch.randint(0, int(noise_scheduler.config.num_train_timesteps), (bsz,), device=latents.device)
                 timesteps = timesteps.long()
 
                 # Add noise to the latents according to the noise magnitude at each timestep
