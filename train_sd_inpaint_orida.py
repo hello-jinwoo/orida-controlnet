@@ -13,6 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 
+import json
 import argparse
 import contextlib
 import gc
@@ -241,8 +242,16 @@ def log_validation(
     validation_tgt_images = sorted([f for f in os.listdir(validation_tgt_dir) if ".jpg" in f and "_0.jpg" not in f and f[0] != "."])
     assert len(validation_src_images) == len(validation_tgt_images)
 
+    validation_prompt_dict = None
+    if args.validation_prompt_dict_dir != "":
+        with open(args.validation_prompt_dict_dir, 'r') as f:
+            validation_prompt_dict = json.load(f)
+
     for validation_src_image, validation_tgt_image in zip(validation_src_images, validation_tgt_images):
-        validation_prompt = ""
+        if validation_prompt_dict == None:
+            validation_prompt = ""
+        else:
+            validation_prompt = validation_prompt_dict[validation_tgt_image.split("_")[0]]
 
         validation_bg_image = f"{validation_tgt_dir}/{validation_tgt_image.split('.jpg')[0][:-2]}_0.jpg"
         validation_src_mask = f"{validation_src_dir}/{validation_src_image.split('.jpg')[0]}_mask.jpg"
@@ -714,6 +723,22 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--validation_prompt_dict_dir", # TODO: edit the description
+        type=str,
+        default="",
+        help=(
+            ""
+        ),
+    )
+    parser.add_argument(
+        "--train_prompt_dict_dir", # TODO: edit the description
+        type=str,
+        default="",
+        help=(
+            ""
+        ),
+    )
+    parser.add_argument(
         "--validation_src_dir", # TODO: edit the description
         type=str,
         default=None,
@@ -835,8 +860,21 @@ def parse_args(input_args=None):
 def make_train_dataset(args, tokenizer, accelerator):
 
     def get_data_paths(root_dir):
+        if args.train_prompt_dict_dir == "":
+            train_prompt_dict = None
+        else:
+            with open(args.train_prompt_dict_dir, "r") as f:
+                train_prompt_dict = json.load(f)
         data_list = []
         for obj_idx in os.listdir(root_dir):
+            if train_prompt_dict == None:
+                obj_prompt = ""
+            else:
+                obj_key = f"{int(obj_idx):05}"
+                if obj_key in train_prompt_dict:
+                    obj_prompt = train_prompt_dict[f"{int(obj_idx):05}"]
+                else:
+                    obj_prompt = ""
             fcf_scene_list = []
             fo_scene_list = []
             obj_category_path = os.path.join(root_dir, obj_idx)
@@ -858,7 +896,7 @@ def make_train_dataset(args, tokenizer, accelerator):
                         "src_scene_id": src_scene_id, 
                         "tgt_scene_id": tgt_scene_id, 
                         "img_size": args.resolution,
-                        "text": "",
+                        "text": obj_prompt,
                     })
         random.shuffle(data_list)
         return data_list
