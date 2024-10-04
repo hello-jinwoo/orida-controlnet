@@ -206,6 +206,7 @@ def log_validation(
     pipeline.enable_xformers_memory_efficient_attention()
 
     # pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
+    # pipeline.scheduler = DDPMScheduler.from_config(pipeline.scheduler.config) # TODO: [Validation] DDIM? DDPM? UniPC?
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
 
@@ -289,7 +290,8 @@ def log_validation(
                 for validation_init_timestep in validation_init_timesteps:
                     images.append(pipeline(
                         num_inference_steps=args.validation_num_inference_steps,
-                        init_timestep=validation_init_timestep, # Customized part
+                        # init_timestep=validation_init_timestep, # Customized part
+                        strength=1.-(validation_init_timestep/args.validation_num_inference_steps), # use strength instead of our init_timestep
                         prompt=validation_prompt, 
                         image=validation_input_image, 
                         mask_image=validation_tgt_mask,
@@ -749,9 +751,17 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--denoising_init_timestep", # TODO: edit the description
         type=int,
+        default=1000,
+        help=(
+            "out of 1000 denoising steps"
+        ),
+    )
+    parser.add_argument(
+        "--denoising_end_timestep", # TODO: edit the description
+        type=int,
         default=0,
         help=(
-            ""
+            "out of 1000 denoising steps"
         ),
     )
     parser.add_argument(
@@ -1320,8 +1330,7 @@ def main(args):
                 bsz = latents.shape[0]
                 # Sample a random timestep for each image
                 # timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device) # original
-                T = int(noise_scheduler.config.num_train_timesteps / args.validation_num_inference_steps * (args.validation_num_inference_steps - args.denoising_init_timestep))
-                timesteps = torch.randint(0, T, (bsz,), device=latents.device)
+                timesteps = torch.randint(args.denoising_end_timestep, args.denoising_init_timestep, (bsz,), device=latents.device)
                 timesteps = timesteps.long()
 
                 # Add noise to the latents according to the noise magnitude at each timestep
