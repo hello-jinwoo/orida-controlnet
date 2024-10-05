@@ -47,6 +47,7 @@ from diffusers import (
     # ControlNetModel,
     DDPMScheduler,
     # DDIMScheduler,
+    StableDiffusionPipeline,
     # StableDiffusionControlNetPipeline,
     # StableDiffusionControlNetImg2ImgPipeline,
     AutoPipelineForInpainting,
@@ -55,11 +56,14 @@ from diffusers import (
     UniPCMultistepScheduler,
 )
 from diffusers.optimization import get_scheduler
-from diffusers.utils import check_min_version, is_wandb_available
+from diffusers.utils import check_min_version, is_wandb_available, convert_state_dict_to_diffusers
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.image_processor import PipelineImageInput, VaeImageProcessor 
+
+from peft import LoraConfig
+from peft.utils import get_peft_model_state_dict
 
 ##### Customized Part #####
 from custom_pipeline_stable_diffusion_inpaint import CustomStableDiffusionInpaintPipeline
@@ -743,6 +747,13 @@ def parse_args(input_args=None):
     )
 
     parser.add_argument(
+        "--lora_rank",
+        type=int,
+        default=0,
+        help="activate when lora_rank > 0",
+    )
+
+    parser.add_argument(
         "--proportion_empty_prompts",
         type=float,
         default=0,
@@ -1051,11 +1062,6 @@ def make_train_dataset(args, tokenizer, accelerator):
             tgt_mask_np = np.array(tgt_pos_mask)
             in_img_np = np.where(tgt_mask_np > 1e-2, reshaped_src_img_np, bg_img_np)
             in_img = Image.fromarray(in_img_np)
-            
-            # [Delete]
-            vis_dir = "tmp_vis"
-            if len(os.listdir(vis_dir)) < 100:
-                tgt_img.save(f"{vis_dir}/{tgt_filename_base}_tgt.jpg")
 
             if examples["aug_crop"][i] > 0:
                 in_img = apply_crop(in_img, (int(img_len*(1-examples["aug_crop"][i])), int(img_len*(1-examples["aug_crop"][i]))))
@@ -1081,11 +1087,6 @@ def make_train_dataset(args, tokenizer, accelerator):
                 )
                 in_img = apply_color_jitter(in_img, jitter_params)
                 tgt_img = apply_color_jitter(tgt_img, jitter_params)
-            
-            # [Delete]
-            vis_dir = "tmp_vis"
-            if len(os.listdir(vis_dir)) < 200:
-                tgt_img.save(f"{vis_dir}/{tgt_filename_base}_tgt_aug.jpg")
             
             # processed_examples["input_pixel_values"].append(image_transforms(in_img))
             # processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
@@ -1261,23 +1262,29 @@ def main(args):
             while len(models) > 0:
                 # pop models so that they are not loaded again
                 model = models.pop()
-
-                # load diffusers style into model
-                # load_model = ControlNetModel.from_pretrained(input_dir, subfolder="controlnet")
-                load_model = UNet2DConditionModel.from_pretrained(input_dir, subfolder="unet")
+                load_model = model.from_pretrained(input_dir, subfolder="unet")
                 model.register_to_config(**load_model.config)
 
                 model.load_state_dict(load_model.state_dict())
                 del load_model
 
-        accelerator.register_save_state_pre_hook(save_model_hook)
-        accelerator.register_load_state_pre_hook(load_model_hook)
+        # accelerator.register_save_state_pre_hook(save_model_hook)
+        # accelerator.register_load_state_pre_hook(load_model_hook)
 
     vae.requires_grad_(False)
-    unet.requires_grad_(True) # [change]
+    unet.requires_grad_(False)
     text_encoder.requires_grad_(False)
-    unet.train() # [new]
     # controlnet.train()
+
+    assert args.lora_rank > 0 # TODO: make it configurable?
+    unet_lora_config = LoraConfig(
+        r=args.lora_rank,
+        lora_alpha=args.lora_rank,
+        init_lora_weights="olora",
+        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+    )
+    unet.add_adapter(unet_lora_config)
+    lora_layers = filter(lambda p: p.requires_grad, unet.parameters())
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -1333,15 +1340,16 @@ def main(args):
 
     # Optimizer creation
     # params_to_optimize = controlnet.parameters()
-    params_to_optimize = unet.parameters() # [new]
+    # params_to_optimize = unet.parameters()
+    
     optimizer = optimizer_class(
-        params_to_optimize,
+        lora_layers,
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )
-
+ 
     train_dataset = make_train_dataset(args, tokenizer, accelerator)
 
     train_dataloader = torch.utils.data.DataLoader(
@@ -1549,7 +1557,7 @@ def main(args):
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     # params_to_clip = controlnet.parameters()
-                    params_to_clip = unet.parameters() # [new]
+                    params_to_clip = lora_layers # [new]
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
@@ -1584,6 +1592,17 @@ def main(args):
 
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                         accelerator.save_state(save_path)
+
+                        unwrapped_unet = unwrap_model(unet)
+                        unet_lora_state_dict = convert_state_dict_to_diffusers(
+                            get_peft_model_state_dict(unwrapped_unet)
+                        )
+
+                        StableDiffusionPipeline.save_lora_weights(
+                            save_directory=save_path,
+                            unet_lora_layers=unet_lora_state_dict,
+                            safe_serialization=True,
+                        )
                         logger.info(f"Saved state to {save_path}")
 
                     if args.validation_prompt is not None and global_step % args.validation_steps == 0:
@@ -1613,7 +1632,6 @@ def main(args):
         # controlnet.save_pretrained(args.output_dir)
         unet = unwrap_model(unet) # [new]
         unet.save_pretrained(args.output_dir) # [new]
-    
 
         # Run a final round of validation.
         image_logs = None
