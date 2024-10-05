@@ -983,14 +983,12 @@ def make_train_dataset(args, tokenizer, accelerator):
             reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_obj_img, src_obj_bbox, tgt_pos_bbox, img_len))
             # reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_obj_img, src_obj_bbox, tgt_pos_bbox, img_len, margin=5))
             tgt_mask_np = np.array(tgt_pos_mask)
-            # [Deprecated] Mask dilation
-            # kernel = np.ones((5, 5), np.uint8) 
-            # dilated_mask = cv2.dilate(cv2.GaussianBlur(tgt_mask_np, (5, 5), 0), kernel, iterations=1)
-            # dilated_mask = cv2.GaussianBlur(tgt_mask_np, (5, 5), 0)
-            # in_img_np = bg_img_np[mix_mask_np < 1e-2] + src_img_np[mix_mask_np > 1e-2]
-            # in_img_np = np.where(dilated_mask > 1e-2, reshaped_src_img_np, bg_img_np)
             in_img_np = np.where(tgt_mask_np > 1e-2, reshaped_src_img_np, bg_img_np)
             in_img = Image.fromarray(in_img_np)
+            # Mask dilation
+            kernel = np.ones((5, 5), np.uint8) 
+            tgt_mask_np = cv2.dilate(cv2.GaussianBlur(tgt_mask_np, (3, 3), 0), kernel, iterations=3)
+            tgt_mask = Image.fromarray(tgt_mask_np)
 
             processed_examples["input_pixel_values"].append(image_transforms(in_img))
             processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
