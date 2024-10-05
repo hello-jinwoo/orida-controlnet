@@ -697,6 +697,43 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--train_aug_brightness",
+        type=float,
+        default=0,
+        help="augmentation - brightness (0~1)",
+    )
+    parser.add_argument(
+        "--train_aug_saturation",
+        type=float,
+        default=0,
+        help="augmentation - saturation (0~1)",
+    )
+    parser.add_argument(
+        "--train_aug_contrast",
+        type=float,
+        default=0,
+        help="augmentation - contrast (0~1)",
+    )
+    parser.add_argument(
+        "--train_aug_hue",
+        type=float,
+        default=0,
+        help="augmentation - hue (0~1)",
+    )
+    parser.add_argument(
+        "--train_aug_crop",
+        type=float,
+        default=0,
+        help="augmentation - crop (0~1)",
+    )
+    parser.add_argument(
+        "--train_aug_rotate",
+        type=int,
+        default=0,
+        help="augmentation - rotate (0~180)",
+    )
+
+    parser.add_argument(
         "--proportion_empty_prompts",
         type=float,
         default=0,
@@ -831,6 +868,29 @@ def parse_args(input_args=None):
 
     return args
 
+def apply_crop(img, crop_size):
+    i, j, h, w = transforms.RandomCrop.get_params(img, output_size=crop_size)
+    img_cropped = transforms.functional.crop(img, i, j, h, w)
+    return img_cropped
+
+def apply_rotation(img, angle):
+    img_rotated = transforms.functional.rotate(img, angle)
+    return img_rotated
+
+def apply_color_jitter(img, jitter_params):
+    jitter_order = list(jitter_params[0])
+    img_jittered = img
+    for jitter_idx in jitter_order:
+        if jitter_idx == 0:
+            img_jittered = transforms.functional.adjust_brightness(img_jittered, jitter_params[1])
+        elif jitter_idx == 1:
+            img_jittered = transforms.functional.adjust_contrast(img_jittered, jitter_params[2])
+        elif jitter_idx == 2:
+            img_jittered = transforms.functional.adjust_saturation(img_jittered, jitter_params[3])
+        elif jitter_idx == 3:
+            img_jittered = transforms.functional.adjust_hue(img_jittered, jitter_params[4])
+
+    return img_jittered
 
 def make_train_dataset(args, tokenizer, accelerator):
 
@@ -859,6 +919,12 @@ def make_train_dataset(args, tokenizer, accelerator):
                         "tgt_scene_id": tgt_scene_id, 
                         "img_size": args.resolution,
                         "text": "",
+                        "aug_crop": args.train_aug_crop*random.random(),
+                        "aug_rotate": int(args.train_aug_rotate*random.random()),
+                        "aug_brightness": args.train_aug_brightness,
+                        "aug_saturation": args.train_aug_saturation,
+                        "aug_contrast": args.train_aug_contrast,
+                        "aug_hue": args.train_aug_hue,
                     })
         random.shuffle(data_list)
         return data_list
@@ -953,19 +1019,56 @@ def make_train_dataset(args, tokenizer, accelerator):
             # in_img_np = np.where(dilated_mask > 1e-2, reshaped_src_img_np, bg_img_np)
             in_img_np = np.where(tgt_mask_np > 1e-2, reshaped_src_img_np, bg_img_np)
             in_img = Image.fromarray(in_img_np)
+            
+            # [Delete]
+            vis_dir = "tmp_vis"
+            if len(os.listdir(vis_dir)) < 100:
+                tgt_img.save(f"{vis_dir}/{tgt_filename_base}_tgt.jpg")
 
+            if examples["aug_crop"][i] > 0:
+                in_img = apply_crop(in_img, (int(img_len*(1-examples["aug_crop"][i])), int(img_len*(1-examples["aug_crop"][i]))))
+                tgt_img = apply_crop(tgt_img, (int(img_len*(1-examples["aug_crop"][i])), int(img_len*(1-examples["aug_crop"][i]))))
+                tgt_pos_mask = apply_crop(tgt_pos_mask, (int(img_len*(1-examples["aug_crop"][i])), int(img_len*(1-examples["aug_crop"][i]))))
+            if examples["aug_rotate"][i] > 0:
+                angle = random.uniform(-examples["aug_rotate"][i], examples["aug_rotate"][i])
+                in_img = apply_rotation(in_img, angle)
+                tgt_img = apply_rotation(tgt_img, angle)
+                tgt_pos_mask = apply_rotation(tgt_pos_mask, angle)
+            if examples["aug_brightness"][i] + examples["aug_contrast"][i] + examples["aug_saturation"][i] + examples["aug_hue"][i] > 1e-2:
+                color_jitter = transforms.ColorJitter(
+                    brightness=examples["aug_brightness"][i], 
+                    contrast=examples["aug_contrast"][i], 
+                    saturation=examples["aug_saturation"][i], 
+                    hue=examples["aug_hue"][i]
+                )
+                jitter_params = color_jitter.get_params(
+                    color_jitter.brightness, 
+                    color_jitter.contrast, 
+                    color_jitter.saturation, 
+                    color_jitter.hue
+                )
+                in_img = apply_color_jitter(in_img, jitter_params)
+                tgt_img = apply_color_jitter(tgt_img, jitter_params)
+            
+            # [Delete]
+            vis_dir = "tmp_vis"
+            if len(os.listdir(vis_dir)) < 200:
+                tgt_img.save(f"{vis_dir}/{tgt_filename_base}_tgt_aug.jpg")
+            
+            # processed_examples["input_pixel_values"].append(image_transforms(in_img))
+            # processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
             processed_examples["input_pixel_values"].append(image_transforms(in_img))
             processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
             processed_examples["conditioning_pixel_values"].append(conditioning_image_transforms(tgt_pos_mask))
-            
+
         processed_examples["input_ids"] = tokenize_captions(examples) # TODO: [Validation] sanity check needed
 
         return processed_examples
 
     image_transforms = transforms.Compose(
         [
-            # transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-            # transforms.CenterCrop(args.resolution), 
+            transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+            transforms.CenterCrop(args.resolution), 
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
         ]
@@ -973,8 +1076,8 @@ def make_train_dataset(args, tokenizer, accelerator):
 
     conditioning_image_transforms = transforms.Compose(
         [
-            # transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-            # transforms.CenterCrop(args.resolution),
+            transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+            transforms.CenterCrop(args.resolution),
             transforms.ToTensor(), 
         ]
     )
