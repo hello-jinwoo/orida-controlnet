@@ -13,6 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 
+import json
 import argparse
 import contextlib
 import gc
@@ -241,8 +242,16 @@ def log_validation(
     validation_tgt_images = sorted([f for f in os.listdir(validation_tgt_dir) if ".jpg" in f and "_0.jpg" not in f and f[0] != "."])
     assert len(validation_src_images) == len(validation_tgt_images)
 
+    validation_prompt_dict = None
+    if args.validation_prompt_dict_dir != "":
+        with open(args.validation_prompt_dict_dir, 'r') as f:
+            validation_prompt_dict = json.load(f)
+
     for validation_src_image, validation_tgt_image in zip(validation_src_images, validation_tgt_images):
-        validation_prompt = ""
+        if validation_prompt_dict == None:
+            validation_prompt = ""
+        else:
+            validation_prompt = validation_prompt_dict[validation_tgt_image.split("_")[0]]
 
         validation_bg_image = f"{validation_tgt_dir}/{validation_tgt_image.split('.jpg')[0][:-2]}_0.jpg"
         validation_src_mask = f"{validation_src_dir}/{validation_src_image.split('.jpg')[0]}_mask.jpg"
@@ -751,6 +760,22 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--validation_prompt_dict_dir", # TODO: edit the description
+        type=str,
+        default="",
+        help=(
+            ""
+        ),
+    )
+    parser.add_argument(
+        "--train_prompt_dict_dir", # TODO: edit the description
+        type=str,
+        default="",
+        help=(
+            ""
+        ),
+    )
+    parser.add_argument(
         "--validation_src_dir", # TODO: edit the description
         type=str,
         default=None,
@@ -895,8 +920,21 @@ def apply_color_jitter(img, jitter_params):
 def make_train_dataset(args, tokenizer, accelerator):
 
     def get_data_paths(root_dir):
+        if args.train_prompt_dict_dir == "":
+            train_prompt_dict = None
+        else:
+            with open(args.train_prompt_dict_dir, "r") as f:
+                train_prompt_dict = json.load(f)
         data_list = []
         for obj_idx in os.listdir(root_dir):
+            if train_prompt_dict == None:
+                obj_prompt = ""
+            else:
+                obj_key = f"{int(obj_idx):05}"
+                if obj_key in train_prompt_dict:
+                    obj_prompt = train_prompt_dict[f"{int(obj_idx):05}"]
+                else:
+                    obj_prompt = ""
             fcf_scene_list = []
             fo_scene_list = []
             obj_category_path = os.path.join(root_dir, obj_idx)
@@ -918,13 +956,13 @@ def make_train_dataset(args, tokenizer, accelerator):
                         "src_scene_id": src_scene_id, 
                         "tgt_scene_id": tgt_scene_id, 
                         "img_size": args.resolution,
-                        "text": "",
                         "aug_crop": args.train_aug_crop*random.random(),
                         "aug_rotate": int(args.train_aug_rotate*random.random()),
                         "aug_brightness": args.train_aug_brightness,
                         "aug_saturation": args.train_aug_saturation,
                         "aug_contrast": args.train_aug_contrast,
                         "aug_hue": args.train_aug_hue,
+                        "text": obj_prompt,
                     })
         random.shuffle(data_list)
         return data_list
@@ -1011,12 +1049,6 @@ def make_train_dataset(args, tokenizer, accelerator):
             reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_obj_img, src_obj_bbox, tgt_pos_bbox, img_len))
             # reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_obj_img, src_obj_bbox, tgt_pos_bbox, img_len, margin=5))
             tgt_mask_np = np.array(tgt_pos_mask)
-            # [Deprecated] Mask dilation
-            # kernel = np.ones((5, 5), np.uint8) 
-            # dilated_mask = cv2.dilate(cv2.GaussianBlur(tgt_mask_np, (5, 5), 0), kernel, iterations=1)
-            # dilated_mask = cv2.GaussianBlur(tgt_mask_np, (5, 5), 0)
-            # in_img_np = bg_img_np[mix_mask_np < 1e-2] + src_img_np[mix_mask_np > 1e-2]
-            # in_img_np = np.where(dilated_mask > 1e-2, reshaped_src_img_np, bg_img_np)
             in_img_np = np.where(tgt_mask_np > 1e-2, reshaped_src_img_np, bg_img_np)
             in_img = Image.fromarray(in_img_np)
             
@@ -1057,6 +1089,12 @@ def make_train_dataset(args, tokenizer, accelerator):
             
             # processed_examples["input_pixel_values"].append(image_transforms(in_img))
             # processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
+
+            # Mask dilation
+            kernel = np.ones((5, 5), np.uint8) 
+            tgt_mask_np = cv2.dilate(cv2.GaussianBlur(tgt_mask_np, (3, 3), 0), kernel, iterations=3)
+            tgt_mask = Image.fromarray(tgt_mask_np)
+
             processed_examples["input_pixel_values"].append(image_transforms(in_img))
             processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
             processed_examples["conditioning_pixel_values"].append(conditioning_image_transforms(tgt_pos_mask))
