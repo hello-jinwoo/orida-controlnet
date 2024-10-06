@@ -1543,12 +1543,12 @@ def main(args):
                 if args.loss_mask == "":
                     tgt_pos_mask = torch.ones_like(tgt_pos_mask).to(tgt_pos_mask.device)
                 elif args.loss_mask == "object_only":
-                    tgt_pos_mask = torch.clip(tgt_pos_mask, 1e-6, 1.)
+                    tgt_pos_mask = torch.clip(tgt_pos_mask, 0., 1.)
                 elif args.loss_mask == "object_centric":
                     tgt_pos_mask = torch.clip(tgt_pos_mask, 5e-2, 1.)
                     tgt_pos_mask = transforms.functional.gaussian_blur(tgt_pos_mask, (9, 9))
                 elif args.loss_mask == "background_only":
-                    tgt_pos_mask = torch.clip(1-tgt_pos_mask, 1e-6, 1.)
+                    tgt_pos_mask = torch.clip(1-tgt_pos_mask, 0., 1.)
                 elif args.loss_mask == "background_centric":
                     tgt_pos_mask = torch.clip(1-tgt_pos_mask, 5e-2, 1.)
                     tgt_pos_mask = transforms.functional.gaussian_blur(tgt_pos_mask, (9, 9))
