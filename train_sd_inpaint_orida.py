@@ -277,7 +277,7 @@ def log_validation(
         validation_input_image_np = np.where(validation_tgt_mask_np > 1, validation_src_image_reshaped_np, validation_bg_image_np)
         validation_input_image = Image.fromarray(validation_input_image_np)
 
-        validation_srb_obj_image = get_masked_img(validation_src_image, validation_src_mask, validation_src_bbox, args.resolution)
+        validation_srb_obj_image = get_resized_masked_img(validation_src_image, validation_src_mask, validation_src_bbox, args.resolution)
 
         # validation_masked_image = validation_input_image.copy()
         # validation_masked_image.paste(0, (0, 0), validation_tgt_mask)
@@ -923,11 +923,17 @@ def apply_color_jitter(img, jitter_params):
 
     return img_jittered
 
-def get_masked_img(img, mask, bbox, img_len):
+def get_masked_img(img, mask):
     img_np = np.array(img)
     mask_np = np.array(mask)
-    masked_img_np = in_img_np = np.where(mask_np[..., None] > 1e-2, img_np, 0)
+    if mask_np.ndim == 2:
+        mask_np = mask_np[..., None]
+    masked_img_np = np.where(mask_np > 1e-2, img_np, 0)
     masked_img = Image.fromarray(masked_img_np)
+    return masked_img
+
+def get_resized_masked_img(img, mask, bbox, img_len):
+    masked_img = get_masked_img(img, mask)
     x_min_, y_min_, x_max_, y_max_ = map(float, bbox.split(','))
     masked_w = x_max_ - x_min_
     masked_h = y_max_ - y_min_
@@ -1081,7 +1087,7 @@ def make_train_dataset(args, tokenizer, accelerator):
             in_img_np = np.where(tgt_mask_np > 1e-2, reshaped_src_img_np, bg_img_np)
             in_img = Image.fromarray(in_img_np)
             
-            src_obj_img = get_masked_img(src_img, src_obj_mask, src_obj_bbox, img_len)
+            src_obj_img = get_resized_masked_img(src_img, src_obj_mask, src_obj_bbox, img_len)
 
             if examples["aug_crop"][i] > 0:
                 in_img = apply_crop(in_img, (int(img_len*(1-examples["aug_crop"][i])), int(img_len*(1-examples["aug_crop"][i]))))
