@@ -304,6 +304,7 @@ def log_validation(
                     images.append(pipeline(
                         custom_unet=unet, # Customized Part
                         custom_unet_init_timestep=args.denoising_init_timestep, # Customized Part
+                        custom_unet_end_timestep=args.denoising_end_timestep, # Customized Part
                         num_inference_steps=args.validation_num_inference_steps,
                         # init_timestep=validation_init_timestep, # Customized part
                         strength=1.-(validation_init_timestep/args.validation_num_inference_steps), # use strength instead of our init_timestep

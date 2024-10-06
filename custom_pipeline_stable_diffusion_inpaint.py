@@ -297,6 +297,7 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
         # init_timestep: Optional[int] = 0,
         custom_unet = None,
         custom_unet_init_timestep: int = 0,
+        custom_unet_end_timestep: int = 0,
         ###############################################################################
         **kwargs,
     ):
@@ -663,17 +664,7 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
                     latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents], dim=1)
 
                 # predict the noise residual
-                if t > custom_unet_init_timestep:
-                    noise_pred = self.unet(
-                        latent_model_input,
-                        t,
-                        encoder_hidden_states=prompt_embeds,
-                        timestep_cond=timestep_cond,
-                        cross_attention_kwargs=self.cross_attention_kwargs,
-                        added_cond_kwargs=added_cond_kwargs,
-                        return_dict=False,
-                    )[0]
-                else:
+                if custom_unet_init_timestep < t < custom_unet_end_timestep:
                     noise_pred = custom_unet(
                         latent_model_input,
                         t,
@@ -681,6 +672,16 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
                         timestep_cond=timestep_cond,
                         # cross_attention_kwargs=self.cross_attention_kwargs,
                         # added_cond_kwargs=added_cond_kwargs,
+                        return_dict=False,
+                    )[0]
+                else:
+                    noise_pred = self.unet(
+                        latent_model_input,
+                        t,
+                        encoder_hidden_states=prompt_embeds,
+                        timestep_cond=timestep_cond,
+                        cross_attention_kwargs=self.cross_attention_kwargs,
+                        added_cond_kwargs=added_cond_kwargs,
                         return_dict=False,
                     )[0]
 
