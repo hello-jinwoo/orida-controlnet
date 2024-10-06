@@ -1540,7 +1540,7 @@ def main(args):
                 pred_latents = pred_original_sample
                 # pred_latents = noise_scheduler.step(model_pred, timesteps, noisy_latents, return_dict=True)["pred_original_sample"]
                 # TODO: temporal versions of loss masking
-                if args.loss_mask == "object_only":
+                if args.loss_mask == "":
                     tgt_pos_mask = torch.ones_like(tgt_pos_mask).to(tgt_pos_mask.device)
                 elif args.loss_mask == "object_only":
                     tgt_pos_mask = torch.clip(tgt_pos_mask, 1e-6, 1.)
