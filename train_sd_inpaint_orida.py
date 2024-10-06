@@ -200,7 +200,7 @@ def log_validation(
         vae=vae,
         text_encoder=text_encoder,
         tokenizer=tokenizer,
-        unet=unet,
+        # unet=unet,
         safety_checker=None,
         revision=args.revision,
         variant=args.variant,
@@ -302,6 +302,8 @@ def log_validation(
                     validation_init_timesteps = [int(n) for n in args.validation_init_timesteps]
                 for validation_init_timestep in validation_init_timesteps:
                     images.append(pipeline(
+                        custom_unet=unet, # Customized Part
+                        custom_unet_init_timestep=args.denoising_init_timestep, # Customized Part
                         num_inference_steps=args.validation_num_inference_steps,
                         # init_timestep=validation_init_timestep, # Customized part
                         strength=1.-(validation_init_timestep/args.validation_num_inference_steps), # use strength instead of our init_timestep
@@ -751,6 +753,13 @@ def parse_args(input_args=None):
         type=int,
         default=0,
         help="activate when lora_rank > 0",
+    )
+
+    parser.add_argument(
+        "--lora_init",
+        type=str,
+        default="gaussian",
+        help="",
     )
 
     parser.add_argument(
@@ -1280,7 +1289,7 @@ def main(args):
     unet_lora_config = LoraConfig(
         r=args.lora_rank,
         lora_alpha=args.lora_rank,
-        init_lora_weights="olora",
+        init_lora_weights=args.lora_init,
         target_modules=["to_k", "to_q", "to_v", "to_out.0"],
     )
     unet.add_adapter(unet_lora_config)
