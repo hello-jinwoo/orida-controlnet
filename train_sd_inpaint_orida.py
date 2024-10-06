@@ -811,6 +811,12 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--loss_mask", # TODO: edit the description
+        type=str,
+        default="",
+        help=("masking loss: object_only/centric, background_only/centric"),
+    )
+    parser.add_argument(
         "--denoising_init_timestep", # TODO: edit the description
         type=int,
         default=1000,
@@ -1051,11 +1057,6 @@ def make_train_dataset(args, tokenizer, accelerator):
             tgt_mask_np = np.array(tgt_pos_mask)
             in_img_np = np.where(tgt_mask_np > 1e-2, reshaped_src_img_np, bg_img_np)
             in_img = Image.fromarray(in_img_np)
-            
-            # [Delete]
-            vis_dir = "tmp_vis"
-            if len(os.listdir(vis_dir)) < 100:
-                tgt_img.save(f"{vis_dir}/{tgt_filename_base}_tgt.jpg")
 
             if examples["aug_crop"][i] > 0:
                 in_img = apply_crop(in_img, (int(img_len*(1-examples["aug_crop"][i])), int(img_len*(1-examples["aug_crop"][i]))))
@@ -1081,11 +1082,6 @@ def make_train_dataset(args, tokenizer, accelerator):
                 )
                 in_img = apply_color_jitter(in_img, jitter_params)
                 tgt_img = apply_color_jitter(tgt_img, jitter_params)
-            
-            # [Delete]
-            vis_dir = "tmp_vis"
-            if len(os.listdir(vis_dir)) < 200:
-                tgt_img.save(f"{vis_dir}/{tgt_filename_base}_tgt_aug.jpg")
             
             # processed_examples["input_pixel_values"].append(image_transforms(in_img))
             # processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
@@ -1543,7 +1539,22 @@ def main(args):
 
                 pred_latents = pred_original_sample
                 # pred_latents = noise_scheduler.step(model_pred, timesteps, noisy_latents, return_dict=True)["pred_original_sample"]
-                loss = F.mse_loss(pred_latents.float(), target_latents.float(), reduction="mean")
+                # TODO: temporal versions of loss masking
+                if args.loss_mask == "object_only":
+                    tgt_pos_mask = torch.ones_like(tgt_pos_mask).to(tgt_pos_mask.device)
+                elif args.loss_mask == "object_only":
+                    tgt_pos_mask = torch.clip(tgt_pos_mask, 1e-6, 1.)
+                elif args.loss_mask == "object_centric":
+                    tgt_pos_mask = torch.clip(tgt_pos_mask, 5e-2, 1.)
+                    tgt_pos_mask = transforms.functional.gaussian_blur(tgt_pos_mask, (9, 9))
+                elif args.loss_mask == "background_only":
+                    tgt_pos_mask = torch.clip(1-tgt_pos_mask, 1e-6, 1.)
+                elif args.loss_mask == "background_centric":
+                    tgt_pos_mask = torch.clip(1-tgt_pos_mask, 5e-2, 1.)
+                    tgt_pos_mask = transforms.functional.gaussian_blur(tgt_pos_mask, (9, 9))
+                loss = F.mse_loss(pred_latents.float() * tgt_pos_mask, target_latents.float() * tgt_pos_mask, reduction="mean")
+
+                
                 # ours to here
 
                 accelerator.backward(loss)
