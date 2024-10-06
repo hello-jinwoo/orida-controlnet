@@ -196,7 +196,7 @@ def log_validation(
         vae=vae,
         text_encoder=text_encoder,
         tokenizer=tokenizer,
-        unet=unet,
+        # unet=unet,
         safety_checker=None,
         revision=args.revision,
         variant=args.variant,
@@ -298,6 +298,9 @@ def log_validation(
                     validation_init_timesteps = [int(n) for n in args.validation_init_timesteps]
                 for validation_init_timestep in validation_init_timesteps:
                     images.append(pipeline(
+                        custom_unet=unet,
+                        custom_unet_init_timestep=args.denoising_init_timestep,
+                        custom_unet_end_timestep=args.denoising_end_timestep,
                         num_inference_steps=args.validation_num_inference_steps,
                         # init_timestep=validation_init_timestep, # Customized part
                         strength=1.-(validation_init_timestep/args.validation_num_inference_steps), # use strength instead of our init_timestep
