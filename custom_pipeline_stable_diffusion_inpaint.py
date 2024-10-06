@@ -664,7 +664,7 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
                     latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents], dim=1)
 
                 # predict the noise residual
-                if custom_unet_init_timestep < t < custom_unet_end_timestep:
+                if custom_unet_end_timestep < t < custom_unet_init_timestep:
                     noise_pred = custom_unet(
                         latent_model_input,
                         t,
