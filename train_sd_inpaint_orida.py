@@ -814,7 +814,7 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
-        "--loss_mask", # TODO: edit the description
+        "--loss_mask",
         type=str,
         default="",
         help=("masking loss: object_only/centric, background_only/centric"),
@@ -1465,6 +1465,9 @@ def main(args):
                 latents = vae.encode(batch["input_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() # ours
                 latents = latents * vae.config.scaling_factor
 
+                target_latents = vae.encode(batch["output_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                target_latents = target_latents * vae.config.scaling_factor
+
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents) # original
                 bsz = latents.shape[0]
@@ -1475,7 +1478,8 @@ def main(args):
 
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
-                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps) # z_t
+                # noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps) # z_t
+                noisy_latents = noise_scheduler.add_noise(target_latents.detach().clone(), noise, timesteps) # z_t # v0.7 # TODO: [Validation] detach & clone?
 
                 # Get the text embedding for conditioning
                 encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
@@ -1487,7 +1491,8 @@ def main(args):
                 # masked_image_latents = vae.encode(masked_image).latent_dist.sample() * vae.config.scaling_factor
                 # latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, masked_image_latents], dim=1) # inpaint
                 # ###################################################################################
-                latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, latents], dim=1) # ours
+                # latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, latents], dim=1) # v0.1, v0.2, v0.3, v0.4, v0.6 (no v0.5)
+                latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, latents], dim=1) # v0.7
                 model_pred = unet(
                     latent_model_input,
                     timesteps,
@@ -1512,8 +1517,6 @@ def main(args):
                 # original to here
                 # ↓↓↓ code changed ↓↓↓
                 # ours from here
-                target_latents = vae.encode(batch["output_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
-                target_latents = target_latents * vae.config.scaling_factor
 
                 '''
                     [수정 사항]
