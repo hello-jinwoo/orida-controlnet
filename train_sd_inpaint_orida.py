@@ -277,6 +277,8 @@ def log_validation(
         validation_input_image_np = np.where(validation_tgt_mask_np > 1, validation_src_image_reshaped_np, validation_bg_image_np)
         validation_input_image = Image.fromarray(validation_input_image_np)
 
+        validation_srb_obj_image = get_masked_img(validation_src_image, validation_src_mask, validation_src_bbox, args.resolution)
+
         # validation_masked_image = validation_input_image.copy()
         # validation_masked_image.paste(0, (0, 0), validation_tgt_mask)
         # validation_masked_image_latents = VaeImageProcessor().preprocess(validation_input_image).to(vae.device).latent_dist.sample() * vae.config.scaling_factor
@@ -298,6 +300,9 @@ def log_validation(
                     validation_init_timesteps = [int(n) for n in args.validation_init_timesteps]
                 for validation_init_timestep in validation_init_timesteps:
                     images.append(pipeline(
+                        custom_unet=unet, # Customized Part
+                        custom_unet_init_timestep=args.denoising_init_timestep, # Customized Part
+                        custom_unet_end_timestep=args.denoising_end_timestep, # Customized Part
                         num_inference_steps=args.validation_num_inference_steps,
                         # init_timestep=validation_init_timestep, # Customized part
                         strength=1.-(validation_init_timestep/args.validation_num_inference_steps), # use strength instead of our init_timestep
@@ -305,7 +310,8 @@ def log_validation(
                         image=validation_input_image, 
                         mask_image=validation_tgt_mask,
                         # masked_image_latents=validation_masked_image_latents,
-                        masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
+                        # masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor,  # v0.1~0.4
+                        masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_srb_obj_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, # v0.5
                         # mask_image=Image.new("L", (args.resolution, args.resolution), 0), 
                         generator=generator
                     ).images[0])
@@ -917,6 +923,28 @@ def apply_color_jitter(img, jitter_params):
 
     return img_jittered
 
+def get_masked_img(img, mask, bbox, img_len):
+    img_np = np.array(img)
+    mask_np = np.array(mask)
+    masked_img_np = in_img_np = np.where(mask_np[..., None] > 1e-2, img_np, 0)
+    masked_img = Image.fromarray(masked_img_np)
+    x_min_, y_min_, x_max_, y_max_ = map(float, bbox.split(','))
+    masked_w = x_max_ - x_min_
+    masked_h = y_max_ - y_min_
+    if masked_w > masked_h:
+        masked_reshaped_w = 1.0
+        masked_reshaped_h = masked_h / masked_w
+    else:
+        masked_reshaped_w = masked_w / masked_h
+        masked_reshaped_h = 1.0
+    reshaped_x_min_ = max(0.01, 0.5-(masked_reshaped_w/2))
+    reshaped_y_min_ = max(0.01, 0.5-(masked_reshaped_h/2))
+    reshaped_x_max_ = min(0.99, 0.5+(masked_reshaped_w/2))
+    reshaped_y_max_ = min(0.99, 0.5+(masked_reshaped_h/2))
+    masked_reshaped_bbox = f"{reshaped_x_min_}, {reshaped_y_min_}, {reshaped_x_max_}, {reshaped_y_max_}"
+    masked_img = reshape_image_to_tgt_pos(masked_img, bbox, masked_reshaped_bbox, img_len)
+    return masked_img
+
 def make_train_dataset(args, tokenizer, accelerator):
 
     def get_data_paths(root_dir):
@@ -990,6 +1018,7 @@ def make_train_dataset(args, tokenizer, accelerator):
 
         processed_examples = dict()
         processed_examples["input_pixel_values"] = []
+        processed_examples["src_obj_pixel_values"] = []
         processed_examples["output_pixel_values"] = []
         processed_examples["conditioning_pixel_values"] = []
         processed_examples["input_ids"] = []
@@ -1013,7 +1042,7 @@ def make_train_dataset(args, tokenizer, accelerator):
                         src_img_path = f"{root_dir}/{obj_idx}/factual_only/images/{src_filename_base}_1.jpg"
                         src_bbox_path = f"{root_dir}/{obj_idx}/factual_only/annotations/bbox/{src_filename_base}_1_bbox.txt"
                         src_mask_path = f"{root_dir}/{obj_idx}/factual_only/annotations/masks/{src_filename_base}_1_mask.jpg"
-                    src_obj_img = Image.open(src_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
+                    src_img = Image.open(src_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
                     break
                 except:
                     src_scene_id = examples["src_scene_id"][i] # there may not exist other isp settings -> just use default isp 
@@ -1046,16 +1075,13 @@ def make_train_dataset(args, tokenizer, accelerator):
 
             # mix bg_img and src_obj img with tgt_pos_mask to make collage image
             bg_img_np = np.array(bg_img)
-            reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_obj_img, src_obj_bbox, tgt_pos_bbox, img_len))
-            # reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_obj_img, src_obj_bbox, tgt_pos_bbox, img_len, margin=5))
+            reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_img, src_obj_bbox, tgt_pos_bbox, img_len))
+            # reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_img, src_obj_bbox, tgt_pos_bbox, img_len, margin=5))
             tgt_mask_np = np.array(tgt_pos_mask)
             in_img_np = np.where(tgt_mask_np > 1e-2, reshaped_src_img_np, bg_img_np)
             in_img = Image.fromarray(in_img_np)
             
-            # [Delete]
-            vis_dir = "tmp_vis"
-            if len(os.listdir(vis_dir)) < 100:
-                tgt_img.save(f"{vis_dir}/{tgt_filename_base}_tgt.jpg")
+            src_obj_img = get_masked_img(src_img, src_obj_mask, src_obj_bbox, img_len)
 
             if examples["aug_crop"][i] > 0:
                 in_img = apply_crop(in_img, (int(img_len*(1-examples["aug_crop"][i])), int(img_len*(1-examples["aug_crop"][i]))))
@@ -1081,12 +1107,14 @@ def make_train_dataset(args, tokenizer, accelerator):
                 )
                 in_img = apply_color_jitter(in_img, jitter_params)
                 tgt_img = apply_color_jitter(tgt_img, jitter_params)
-            
+                src_obj_img = apply_color_jitter(src_obj_img, jitter_params)
+
             # [Delete]
             vis_dir = "tmp_vis"
-            if len(os.listdir(vis_dir)) < 200:
-                tgt_img.save(f"{vis_dir}/{tgt_filename_base}_tgt_aug.jpg")
-            
+            if len(os.listdir(vis_dir)) < 50:
+                in_img.save(f"{vis_dir}/{src_filename_base}_in.jpg")
+                src_obj_img.save(f"{vis_dir}/{src_filename_base}_src_obj.jpg")
+
             # processed_examples["input_pixel_values"].append(image_transforms(in_img))
             # processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
 
@@ -1096,6 +1124,7 @@ def make_train_dataset(args, tokenizer, accelerator):
             tgt_mask = Image.fromarray(tgt_mask_np)
 
             processed_examples["input_pixel_values"].append(image_transforms(in_img))
+            processed_examples["src_obj_pixel_values"].append(image_transforms(src_obj_img))
             processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
             processed_examples["conditioning_pixel_values"].append(conditioning_image_transforms(tgt_pos_mask))
 
@@ -1135,6 +1164,8 @@ def make_train_dataset(args, tokenizer, accelerator):
 def collate_fn(examples):
     input_pixel_values = torch.stack([example["input_pixel_values"] for example in examples])
     input_pixel_values = input_pixel_values.to(memory_format=torch.contiguous_format).float()
+    src_obj_pixel_values = torch.stack([example["src_obj_pixel_values"] for example in examples])
+    src_obj_pixel_values = src_obj_pixel_values.to(memory_format=torch.contiguous_format).float()
 
     output_pixel_values = torch.stack([example["output_pixel_values"] for example in examples])
     output_pixel_values = output_pixel_values.to(memory_format=torch.contiguous_format).float()
@@ -1146,6 +1177,7 @@ def collate_fn(examples):
 
     return {
         "input_pixel_values": input_pixel_values,
+        "src_obj_pixel_values": src_obj_pixel_values,
         "output_pixel_values": output_pixel_values,
         "conditioning_pixel_values": conditioning_pixel_values,
         "input_ids": input_ids,
@@ -1488,7 +1520,13 @@ def main(args):
                 # masked_image_latents = vae.encode(masked_image).latent_dist.sample() * vae.config.scaling_factor
                 # latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, masked_image_latents], dim=1) # inpaint
                 # ###################################################################################
-                latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, latents], dim=1) # ours
+                
+                # latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, latents], dim=1) # ours
+
+                # v0.5
+                src_obj_latents = vae.encode(batch["src_obj_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample() * vae.config.scaling_factor
+                latent_model_input = torch.cat([noisy_latents, tgt_pos_mask, src_obj_latents], dim=1) 
+                
                 model_pred = unet(
                     latent_model_input,
                     timesteps,
