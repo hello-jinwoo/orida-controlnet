@@ -294,7 +294,9 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         ############################### Customized Part ###############################
-        init_timestep: Optional[int] = 0,
+        # init_timestep: Optional[int] = 0,
+        custom_unet = None,
+        custom_unet_init_timestep: int = 0,
         ###############################################################################
         **kwargs,
     ):
@@ -457,6 +459,10 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
         # 0. Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
+        ################# Customized Part #################
+        if custom_unet == None:
+            custom_unet = self.unet
+        ###################################################
 
         # 1. Check inputs
         self.check_inputs(
@@ -536,10 +542,7 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
                 f"steps is {num_inference_steps} which is < 1 and not appropriate for this pipeline."
             )
         # at which timestep to set the initial noise (n.b. 50% if strength is 0.5)
-        ##################################### Customized Part #####################################
-        # latent_timestep = timesteps[:1].repeat(batch_size * num_images_per_prompt)
-        latent_timestep = timesteps[init_timestep : init_timestep + 1].repeat(batch_size * num_images_per_prompt)
-        ###########################################################################################
+        latent_timestep = timesteps[:1].repeat(batch_size * num_images_per_prompt)
         # create a boolean to check if the strength is set to 1. if so then initialise the latents with pure noise
         is_strength_max = strength == 1.0
 
@@ -645,12 +648,8 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
         # 10. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
-        ##################################### Customized Part #####################################
-        # with self.progress_bar(total=num_inference_steps) as progress_bar:
-        #   for i, t in enumerate(timesteps):
-        with self.progress_bar(total=num_inference_steps - init_timestep) as progress_bar:
-            for i, t in enumerate(timesteps[init_timestep:]): # [980, ... , 0]
-        ###########################################################################################
+        with self.progress_bar(total=num_inference_steps) as progress_bar:
+            for i, t in enumerate(timesteps): # t = [980, 960, ..., 0] if num_inference_steps==50
                 if self.interrupt:
                     continue
 
@@ -664,15 +663,26 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
                     latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents], dim=1)
 
                 # predict the noise residual
-                noise_pred = self.unet(
-                    latent_model_input,
-                    t,
-                    encoder_hidden_states=prompt_embeds,
-                    timestep_cond=timestep_cond,
-                    cross_attention_kwargs=self.cross_attention_kwargs,
-                    added_cond_kwargs=added_cond_kwargs,
-                    return_dict=False,
-                )[0]
+                if t > custom_unet_init_timestep:
+                    noise_pred = self.unet(
+                        latent_model_input,
+                        t,
+                        encoder_hidden_states=prompt_embeds,
+                        timestep_cond=timestep_cond,
+                        cross_attention_kwargs=self.cross_attention_kwargs,
+                        added_cond_kwargs=added_cond_kwargs,
+                        return_dict=False,
+                    )[0]
+                else:
+                    noise_pred = custom_unet(
+                        latent_model_input,
+                        t,
+                        encoder_hidden_states=prompt_embeds,
+                        timestep_cond=timestep_cond,
+                        # cross_attention_kwargs=self.cross_attention_kwargs,
+                        # added_cond_kwargs=added_cond_kwargs,
+                        return_dict=False,
+                    )[0]
 
                 # perform guidance
                 if self.do_classifier_free_guidance:
