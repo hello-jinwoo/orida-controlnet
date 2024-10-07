@@ -305,8 +305,8 @@ def log_validation(
                         # init_timestep=validation_init_timestep, # Customized part
                         strength=1.-(validation_init_timestep/args.validation_num_inference_steps), # use strength instead of our init_timestep
                         prompt=validation_prompt, 
-                        # image=validation_input_image, # v0.1~v0.6
-                        image=validation_tgt_image, # v0.7
+                        image=validation_input_image, # v0.1~v0.6, v0.7??
+                        # image=validation_tgt_image, # v0.7??
                         mask_image=validation_tgt_mask,
                         # masked_image_latents=validation_masked_image_latents,
                         masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
