@@ -1282,7 +1282,7 @@ def main(args):
         # accelerator.register_load_state_pre_hook(load_model_hook)
 
     vae.requires_grad_(False)
-    unet.requires_grad_(False)
+    # unet.requires_grad_(False) # requires_grad needed when lora training
     text_encoder.requires_grad_(False)
     # controlnet.train()
 
