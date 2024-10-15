@@ -57,6 +57,8 @@ from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.image_processor import PipelineImageInput, VaeImageProcessor 
 
+from diffusers.image_processor import IPAdapterMaskProcessor
+
 ##### Customized Part #####
 from custom_pipeline_stable_diffusion_inpaint import CustomStableDiffusionInpaintPipeline
 
@@ -71,6 +73,34 @@ import cv2
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.31.0.dev0")
+
+def get_masked_img(img, mask):
+    img_np = np.array(img)
+    mask_np = np.array(mask)
+    if mask_np.ndim == 2:
+        mask_np = mask_np[..., None]
+    masked_img_np = np.where(mask_np > 1e-2, img_np, 0)
+    masked_img = Image.fromarray(masked_img_np)
+    return masked_img
+
+def get_resized_masked_img(img, mask, bbox, img_len):
+    masked_img = get_masked_img(img, mask)
+    x_min_, y_min_, x_max_, y_max_ = map(float, bbox.split(','))
+    masked_w = x_max_ - x_min_
+    masked_h = y_max_ - y_min_
+    if masked_w > masked_h:
+        masked_reshaped_w = 1.0
+        masked_reshaped_h = masked_h / masked_w
+    else:
+        masked_reshaped_w = masked_w / masked_h
+        masked_reshaped_h = 1.0
+    reshaped_x_min_ = max(0.01, 0.5-(masked_reshaped_w/2))
+    reshaped_y_min_ = max(0.01, 0.5-(masked_reshaped_h/2))
+    reshaped_x_max_ = min(0.99, 0.5+(masked_reshaped_w/2))
+    reshaped_y_max_ = min(0.99, 0.5+(masked_reshaped_h/2))
+    masked_reshaped_bbox = f"{reshaped_x_min_}, {reshaped_y_min_}, {reshaped_x_max_}, {reshaped_y_max_}"
+    masked_img = reshape_image_to_tgt_pos(masked_img, bbox, masked_reshaped_bbox, img_len)
+    return masked_img
 
 def reshape_image_to_tgt_pos(src_img, src_obj_bbox, tgt_pos_bbox, img_size=1024, margin=0):
     # Parse bounding boxes (assuming comma-separated format)
@@ -182,13 +212,16 @@ def validation(
         vae=vae,
         text_encoder=text_encoder,
         tokenizer=tokenizer,
-        # unet=unet,
+        unet=unet,
         safety_checker=None,
         torch_dtype=weight_dtype,
     )
     # pipeline.enable_model_cpu_offload()
-    # remove following line if xFormers is not installed or you have PyTorch 2.0 or higher installed
-    pipeline.enable_xformers_memory_efficient_attention()
+    # # remove following line if xFormers is not installed or you have PyTorch 2.0 or higher installed
+    # pipeline.enable_xformers_memory_efficient_attention()
+    # Load IP Adapter
+    pipeline.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter_sd15.bin") # TODO : path
+    pipeline.set_ip_adapter_scale(args.ip_adapter_scale) 
 
     # pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
     # pipeline.scheduler = DDPMScheduler.from_config(pipeline.scheduler.config) # TODO: [Validation] DDIM? DDPM? UniPC?
@@ -251,36 +284,64 @@ def validation(
         validation_input_image_np = np.where(validation_tgt_mask_np > 1, validation_src_image_reshaped_np, validation_bg_image_np)
         validation_input_image = Image.fromarray(validation_input_image_np)
 
+        # ip adapter input image and mask
+        validation_srb_obj_image = get_resized_masked_img(validation_src_image, validation_src_mask, validation_src_bbox, args.resolution)
+        processor = IPAdapterMaskProcessor()
+        ip_adapter_masks = processor.preprocess(Image.fromarray(validation_tgt_mask_np), height=args.resolution, width=args.resolution) # TODO: list? one item?
+        ip_adapter_masks = ip_adapter_masks.reshape(1, ip_adapter_masks.shape[0], ip_adapter_masks.shape[2], ip_adapter_masks.shape[3])
+
+        
         vis_image_inputs = get_concat_h(validation_src_image, validation_bg_image)
         vis_image_inputs = get_concat_h(vis_image_inputs, validation_input_image)
         vis_image_inputs = get_concat_h(vis_image_inputs, validation_tgt_image)
+        vis_image_inputs = get_concat_h(vis_image_inputs, validation_srb_obj_image)
 
         # for i in range(args.num_validation_images):
-        for i in range(4): # to fit the visualize results, set num_validation_images == 4
+        for i in range(5): # to fit the visualize results, set num_validation_images == 4
             with inference_ctx:
                 result_image = pipeline(
-                    custom_unet=unet,
-                    # custom_unet_init_timestep=args.denoising_init_timestep,
-                    # custom_unet_end_timestep=args.denoising_end_timestep,
                     num_inference_steps=args.validation_num_inference_steps,
                     prompt=validation_prompt, 
                     image=validation_input_image, # v0.1~v0.6, v0.7??
                     # image=validation_tgt_image, # v0.7??
                     mask_image=validation_tgt_mask,
                     masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
+                    ip_adapter_image=validation_srb_obj_image,
+                    cross_attention_kwargs={"ip_adapter_masks": ip_adapter_masks},
                     generator=generator
                 ).images[0]
                 if i == 0:
-                    vis_image_outputs = result_image.copy()
+                    vis_image_outputs1 = result_image.copy()
                 else:
-                    vis_image_outputs = get_concat_h(vis_image_outputs, result_image)
+                    vis_image_outputs1 = get_concat_h(vis_image_outputs1, result_image)
+        # for i in range(5): # to fit the visualize results, set num_validation_images == 4
+        #     with inference_ctx:
+        #         result_image = pipeline(
+        #             custom_unet=unet,
+        #             custom_unet_init_timestep=args.denoising_init_timestep,
+        #             custom_unet_end_timestep=args.denoising_end_timestep,
+        #             num_inference_steps=args.validation_num_inference_steps,
+        #             prompt=validation_prompt, 
+        #             image=validation_input_image, # v0.1~v0.6, v0.7??
+        #             # image=validation_tgt_image, # v0.7??
+        #             mask_image=validation_tgt_mask,
+        #             masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
+        #             ip_adapter_image=validation_input_image, # TODO : change ?
+        #             generator=generator
+        #         ).images[0]
+        #         if i == 0:
+        #             vis_image_outputs2 = result_image.copy()
+        #         else:
+        #             vis_image_outputs2 = get_concat_h(vis_image_outputs2, result_image)
 
-        vis_image_final = get_concat_v(vis_image_inputs, vis_image_outputs)
+        vis_image_final = get_concat_v(vis_image_inputs, vis_image_outputs1)
+        # vis_image_final = get_concat_v(vis_image_final, vis_image_outputs2)
+        os.makedirs(args.output_dir, exist_ok=True)
         vis_image_final.save(f"{args.output_dir}/{vis_name}")
 
-        del pipeline
-        gc.collect()
-        torch.cuda.empty_cache()
+    del pipeline
+    gc.collect()
+    torch.cuda.empty_cache()
 
 def import_model_class_from_model_name_or_path(pretrained_model_name_or_path: str):
     text_encoder_config = PretrainedConfig.from_pretrained(
@@ -498,6 +559,13 @@ def parse_args(input_args=None):
         type=int,
         default=1,
         help="Number of images to be generated for each `--validation_image`, `--validation_prompt` pair",
+    )
+
+    parser.add_argument(
+        "--ip_adapter_scale",
+        type=float,
+        default=0.0,
+        help="",
     )
 
     if input_args is not None:

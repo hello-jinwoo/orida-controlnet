@@ -293,12 +293,6 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
-        ############################### Customized Part ###############################
-        # init_timestep: Optional[int] = 0,
-        custom_unet = None,
-        custom_unet_init_timestep: int = 0,
-        custom_unet_end_timestep: int = 0,
-        ###############################################################################
         **kwargs,
     ):
         r"""
@@ -460,10 +454,6 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
         # 0. Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
-        ################# Customized Part #################
-        if custom_unet == None:
-            custom_unet = self.unet
-        ###################################################
 
         # 1. Check inputs
         self.check_inputs(
@@ -664,26 +654,15 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
                     latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents], dim=1)
 
                 # predict the noise residual
-                if custom_unet_end_timestep < t < custom_unet_init_timestep:
-                    noise_pred = custom_unet(
-                        latent_model_input,
-                        t,
-                        encoder_hidden_states=prompt_embeds,
-                        timestep_cond=timestep_cond,
-                        # cross_attention_kwargs=self.cross_attention_kwargs,
-                        # added_cond_kwargs=added_cond_kwargs,
-                        return_dict=False,
-                    )[0]
-                else:
-                    noise_pred = self.unet(
-                        latent_model_input,
-                        t,
-                        encoder_hidden_states=prompt_embeds,
-                        timestep_cond=timestep_cond,
-                        cross_attention_kwargs=self.cross_attention_kwargs,
-                        added_cond_kwargs=added_cond_kwargs,
-                        return_dict=False,
-                    )[0]
+                noise_pred = self.unet(
+                    latent_model_input,
+                    t,
+                    encoder_hidden_states=prompt_embeds,
+                    timestep_cond=timestep_cond,
+                    cross_attention_kwargs=self.cross_attention_kwargs,
+                    added_cond_kwargs=added_cond_kwargs,
+                    return_dict=False,
+                )[0]
 
                 # perform guidance
                 if self.do_classifier_free_guidance:
