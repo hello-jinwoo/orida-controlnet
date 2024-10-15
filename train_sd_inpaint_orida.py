@@ -61,6 +61,8 @@ from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.image_processor import PipelineImageInput, VaeImageProcessor 
 
+from diffusers.image_processor import IPAdapterMaskProcessor
+
 ##### Customized Part #####
 from custom_pipeline_stable_diffusion_inpaint import CustomStableDiffusionInpaintPipeline
 
@@ -77,6 +79,34 @@ import cv2
 check_min_version("0.31.0.dev0")
 
 logger = get_logger(__name__)
+
+def get_masked_img(img, mask):
+    img_np = np.array(img)
+    mask_np = np.array(mask)
+    if mask_np.ndim == 2:
+        mask_np = mask_np[..., None]
+    masked_img_np = np.where(mask_np > 1e-2, img_np, 0)
+    masked_img = Image.fromarray(masked_img_np)
+    return masked_img
+
+def get_resized_masked_img(img, mask, bbox, img_len):
+    masked_img = get_masked_img(img, mask)
+    x_min_, y_min_, x_max_, y_max_ = map(float, bbox.split(','))
+    masked_w = x_max_ - x_min_
+    masked_h = y_max_ - y_min_
+    if masked_w > masked_h:
+        masked_reshaped_w = 1.0
+        masked_reshaped_h = masked_h / masked_w
+    else:
+        masked_reshaped_w = masked_w / masked_h
+        masked_reshaped_h = 1.0
+    reshaped_x_min_ = max(0.01, 0.5-(masked_reshaped_w/2))
+    reshaped_y_min_ = max(0.01, 0.5-(masked_reshaped_h/2))
+    reshaped_x_max_ = min(0.99, 0.5+(masked_reshaped_w/2))
+    reshaped_y_max_ = min(0.99, 0.5+(masked_reshaped_h/2))
+    masked_reshaped_bbox = f"{reshaped_x_min_}, {reshaped_y_min_}, {reshaped_x_max_}, {reshaped_y_max_}"
+    masked_img = reshape_image_to_tgt_pos(masked_img, bbox, masked_reshaped_bbox, img_len)
+    return masked_img
 
 def reshape_image_to_tgt_pos(src_img, src_obj_bbox, tgt_pos_bbox, img_size=1024, margin=0):
     # Parse bounding boxes (assuming comma-separated format)
@@ -196,15 +226,18 @@ def log_validation(
         vae=vae,
         text_encoder=text_encoder,
         tokenizer=tokenizer,
-        # unet=unet,
+        unet=unet,
         safety_checker=None,
         revision=args.revision,
         variant=args.variant,
         torch_dtype=weight_dtype,
     )
     # pipeline.enable_model_cpu_offload()
-    # remove following line if xFormers is not installed or you have PyTorch 2.0 or higher installed
-    pipeline.enable_xformers_memory_efficient_attention()
+    # # remove following line if xFormers is not installed or you have PyTorch 2.0 or higher installed
+    # pipeline.enable_xformers_memory_efficient_attention()
+
+    pipeline.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter_sd15.bin")
+    pipeline.set_ip_adapter_scale(args.ip_adapter_scale) 
 
     # pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
     # pipeline.scheduler = DDPMScheduler.from_config(pipeline.scheduler.config) # TODO: [Validation] DDIM? DDPM? UniPC?
@@ -277,42 +310,42 @@ def log_validation(
         validation_input_image_np = np.where(validation_tgt_mask_np > 1, validation_src_image_reshaped_np, validation_bg_image_np)
         validation_input_image = Image.fromarray(validation_input_image_np)
 
-        # validation_masked_image = validation_input_image.copy()
-        # validation_masked_image.paste(0, (0, 0), validation_tgt_mask)
-        # validation_masked_image_latents = VaeImageProcessor().preprocess(validation_input_image).to(vae.device).latent_dist.sample() * vae.config.scaling_factor
+        # ip adapter input image and mask
+        validation_srb_obj_image = get_resized_masked_img(validation_src_image, validation_src_mask, validation_src_bbox, args.resolution)
+        processor = IPAdapterMaskProcessor()
+        ip_adapter_masks = processor.preprocess(Image.fromarray(validation_tgt_mask_np), height=args.resolution, width=args.resolution) # TODO: list? one item?
+        ip_adapter_masks = ip_adapter_masks.reshape(1, ip_adapter_masks.shape[0], ip_adapter_masks.shape[2], ip_adapter_masks.shape[3])
         
         images = []
 
+        # w/o ip_adapter
         for _ in range(args.num_validation_images):
             with inference_ctx:
-                # image = pipeline(
-                #     validation_prompt,
-                #     num_inference_steps=20,
-                #     generator=generator,
-                #     image=validation_input_image,
-                #     control_image=validation_tgt_mask,
-                # ).images[0]
-                if args.validation_init_timesteps == None:
-                    validation_init_timesteps = [int(args.validation_num_inference_steps * r) for r in [0, 0.2, 0.4, 0.6]]
-                else:
-                    validation_init_timesteps = [int(n) for n in args.validation_init_timesteps]
-                for validation_init_timestep in validation_init_timesteps:
-                    images.append(pipeline(
-                        custom_unet=unet,
-                        custom_unet_init_timestep=args.denoising_init_timestep,
-                        custom_unet_end_timestep=args.denoising_end_timestep,
-                        num_inference_steps=args.validation_num_inference_steps,
-                        # init_timestep=validation_init_timestep, # Customized part
-                        strength=1.-(validation_init_timestep/args.validation_num_inference_steps), # use strength instead of our init_timestep
-                        prompt=validation_prompt, 
-                        image=validation_input_image, # v0.1~v0.6, v0.7??
-                        # image=validation_tgt_image, # v0.7??
-                        mask_image=validation_tgt_mask,
-                        # masked_image_latents=validation_masked_image_latents,
-                        masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
-                        # mask_image=Image.new("L", (args.resolution, args.resolution), 0), 
-                        generator=generator
-                    ).images[0])
+                # for validation_init_timestep in validation_init_timesteps:
+                images.append(pipeline(
+                    num_inference_steps=args.validation_num_inference_steps,
+                    prompt=validation_prompt, 
+                    image=validation_input_image, # v0.1~v0.6, v0.7??
+                    # image=validation_tgt_image, # v0.7??
+                    mask_image=validation_tgt_mask,
+                    masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
+                    generator=generator
+                ).images[0])
+        # w/ ip_adapter
+        for _ in range(args.num_validation_images):
+            with inference_ctx:
+                # for validation_init_timestep in validation_init_timesteps:
+                images.append(pipeline(
+                    num_inference_steps=args.validation_num_inference_steps,
+                    prompt=validation_prompt, 
+                    image=validation_input_image, # v0.1~v0.6, v0.7??
+                    # image=validation_tgt_image, # v0.7??
+                    mask_image=validation_tgt_mask,
+                    masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
+                    ip_adapter_image=validation_srb_obj_image,
+                    cross_attention_kwargs={"ip_adapter_masks": ip_adapter_masks},
+                    generator=generator
+                ).images[0])
             
 
         image_logs.append(
@@ -373,9 +406,13 @@ def log_validation(
                 # formatted_images.append(wandb.Image(validation_src_mask, caption="validation_src_mask"))
                 # formatted_images.append(wandb.Image(validation_tgt_mask, caption="validation_tgt_mask"))
 
-                for init_t, image in zip(validation_init_timesteps, images):
-                    image = wandb.Image(image, caption=f"init_timestep={init_t} / Caption='{validation_prompt}'")
-                    formatted_images.append(image)
+                for i, image in enumerate(images):
+                    if i < args.num_validation_images:
+                        image = wandb.Image(image, caption="w/o ip_adapter")
+                        formatted_images.append(image)
+                    else:
+                        image = wandb.Image(image, caption="w/ ip_adapter")
+                        formatted_images.append(image)
 
             tracker.log({tracker_key: formatted_images})
         else:

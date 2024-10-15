@@ -220,7 +220,7 @@ def validation(
     # # remove following line if xFormers is not installed or you have PyTorch 2.0 or higher installed
     # pipeline.enable_xformers_memory_efficient_attention()
     # Load IP Adapter
-    pipeline.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter_sd15.bin") # TODO : path
+    pipeline.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter_sd15.bin")
     pipeline.set_ip_adapter_scale(args.ip_adapter_scale) 
 
     # pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
