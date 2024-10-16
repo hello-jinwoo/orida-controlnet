@@ -36,7 +36,7 @@ from accelerate.utils import ProjectConfiguration, set_seed
 from datasets import load_dataset
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
-from PIL import Image
+from PIL import Image, ImageDraw
 from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig
@@ -218,9 +218,6 @@ def log_validation(
     else:
         unet = UNet2DConditionModel.from_pretrained(args.output_dir, torch_dtype=weight_dtype)
 
-    # pipeline = AutoPipelineForInpainting.from_pretrained(
-    #     "runwayml/stable-diffusion-inpainting", torch_dtype=torch.float16, variant="fp16"
-    # )
     pipeline = CustomStableDiffusionInpaintPipeline.from_pretrained(
         "runwayml/stable-diffusion-inpainting", 
         vae=vae,
@@ -232,15 +229,9 @@ def log_validation(
         variant=args.variant,
         torch_dtype=weight_dtype,
     )
-    # pipeline.enable_model_cpu_offload()
-    # # remove following line if xFormers is not installed or you have PyTorch 2.0 or higher installed
-    # pipeline.enable_xformers_memory_efficient_attention()
-
+    # Load IP Adapter
     pipeline.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter_sd15.bin")
-    pipeline.set_ip_adapter_scale(args.ip_adapter_scale) 
-
     # pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
-    # pipeline.scheduler = DDPMScheduler.from_config(pipeline.scheduler.config) # TODO: [Validation] DDIM? DDPM? UniPC?
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
 
@@ -321,6 +312,7 @@ def log_validation(
         # w/o ip_adapter
         for _ in range(args.num_validation_images):
             with inference_ctx:
+                pipeline.set_ip_adapter_scale(0.0) 
                 # for validation_init_timestep in validation_init_timesteps:
                 images.append(pipeline(
                     num_inference_steps=args.validation_num_inference_steps,
@@ -329,10 +321,13 @@ def log_validation(
                     # image=validation_tgt_image, # v0.7??
                     mask_image=validation_tgt_mask,
                     masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
+                    ip_adapter_image=validation_srb_obj_image,
+                    cross_attention_kwargs={"ip_adapter_masks": ip_adapter_masks},
                     generator=generator
                 ).images[0])
         # w/ ip_adapter
         for _ in range(args.num_validation_images):
+            pipeline.set_ip_adapter_scale(args.ip_adapter_scale)
             with inference_ctx:
                 # for validation_init_timestep in validation_init_timesteps:
                 images.append(pipeline(
@@ -346,7 +341,6 @@ def log_validation(
                     cross_attention_kwargs={"ip_adapter_masks": ip_adapter_masks},
                     generator=generator
                 ).images[0])
-            
 
         image_logs.append(
             {"images": images,
@@ -418,6 +412,7 @@ def log_validation(
         else:
             logger.warning(f"image logging not implemented for {tracker.name}")
 
+        pipeline.unload_ip_adapter()
         del pipeline
         gc.collect()
         torch.cuda.empty_cache()
@@ -723,6 +718,19 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--train_data_sub_dir",
+        type=str,
+        default=None,
+        help=(
+            "coco path"
+        ),
+    )
+    parser.add_argument(
+        "--num_data_sub",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
         "--image_column", type=str, default="image", help="The column of the dataset containing the target image."
     )
     # parser.add_argument(
@@ -852,6 +860,14 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--ip_adapter_scale", # TODO: edit the description
+        type=float,
+        default=None,
+        help=(
+            "0.0(No effect)~1.0(All condition by image)"
+        ),
+    )
+    parser.add_argument(
         "--loss_mask",
         type=str,
         default="",
@@ -964,16 +980,28 @@ def apply_color_jitter(img, jitter_params):
 
     return img_jittered
 
+def create_mask_from_segmentation(segmentation, image_size):
+    # Create a blank (black) mask with the given image size
+    mask = Image.new('L', image_size, 0)  # 'L' mode for grayscale (8-bit pixels)
+    draw = ImageDraw.Draw(mask)
+    # Draw the polygon(s) from the segmentation on the mask
+    for segment in segmentation:
+        polygon = [(segment[i], segment[i + 1]) for i in range(0, len(segment), 2)]
+        draw.polygon(polygon, outline=1, fill=1)  # Fill the polygon with white (1)
+    # Convert the mask to a NumPy array if needed
+    mask_array = np.array(mask)
+    return mask_array
+
 def make_train_dataset(args, tokenizer, accelerator):
 
-    def get_data_paths(root_dir):
+    def get_data_paths(main_dir, sub_dir=None):
         if args.train_prompt_dict_dir == "":
             train_prompt_dict = None
         else:
             with open(args.train_prompt_dict_dir, "r") as f:
                 train_prompt_dict = json.load(f)
         data_list = []
-        for obj_idx in os.listdir(root_dir):
+        for obj_idx in os.listdir(main_dir):
             if train_prompt_dict == None:
                 obj_prompt = ""
             else:
@@ -984,7 +1012,7 @@ def make_train_dataset(args, tokenizer, accelerator):
                     obj_prompt = ""
             fcf_scene_list = []
             fo_scene_list = []
-            obj_category_path = os.path.join(root_dir, obj_idx)
+            obj_category_path = os.path.join(main_dir, obj_idx)
             # scenario = "factual_counterfactual"
             fcf_path = os.path.join(obj_category_path, "factual_counterfactual")
             fo_path = os.path.join(obj_category_path, "factual_only")
@@ -998,8 +1026,9 @@ def make_train_dataset(args, tokenizer, accelerator):
             for src_scene_id in fcf_scene_list+fo_scene_list:
                 for tgt_scene_id in fcf_scene_list:
                     data_list.append({
-                        "root_dir": root_dir, 
-                        "obj_idx": obj_idx, 
+                        "type": "orida",
+                        "root_dir": main_dir, 
+                        "obj_idx": int(obj_idx), 
                         "src_scene_id": src_scene_id, 
                         "tgt_scene_id": tgt_scene_id, 
                         "img_size": args.resolution,
@@ -1011,7 +1040,36 @@ def make_train_dataset(args, tokenizer, accelerator):
                         "aug_hue": args.train_aug_hue,
                         "text": obj_prompt,
                     })
-        random.shuffle(data_list)
+        
+        # if sub_dir: # coco
+        #     global coco_annotations # TODO:
+        #     with open(f"{sub_dir}/annotations/instances_train2014.json") as f: # TODO: train? val? test?
+        #         coco_annotations = json.load(f)['annotations']
+        #     n_added = 0
+        #     for i, annotation in enumerate(coco_annotations):
+        #         if n_added >= args.num_data_sub:
+        #             break
+        #         if annotation['area'] < 5000: # filter by mask size 
+        #             continue
+        #         image_id = annotation['image_id']                    
+        #         data_list.append({
+        #             "type": "coco",
+        #             "root_dir": sub_dir, 
+        #             "obj_idx": i, # in coco, use obj_idx as annotation index 
+        #             "src_scene_id": str(image_id), 
+        #             "tgt_scene_id": str(image_id), 
+        #             "img_size": args.resolution,
+        #             "aug_crop": args.train_aug_crop*random.random(),
+        #             "aug_rotate": int(args.train_aug_rotate*random.random()),
+        #             "aug_brightness": args.train_aug_brightness,
+        #             "aug_saturation": args.train_aug_saturation,
+        #             "aug_contrast": args.train_aug_contrast,
+        #             "aug_hue": args.train_aug_hue,
+        #             "text": "",
+        #         })
+        #         n_added += 1
+
+        random.shuffle(data_list) # due to the issue in diffusers shuffle
         return data_list
 
     def tokenize_captions(examples, is_train=True):
@@ -1042,99 +1100,114 @@ def make_train_dataset(args, tokenizer, accelerator):
         processed_examples["input_ids"] = []
 
         img_len = examples["img_size"][0]
-        root_dir = examples["root_dir"][0]
         bs = len(examples["img_size"])
         for i in range(bs):
-            obj_idx = int(examples["obj_idx"][i])
-            # src
-            src_scene_id = examples["src_scene_id"][i][:-1] + str(random.randint(0,4)) # isp augmentation
-            while True:
-                try:
-                    src_filename_base = f"{obj_idx:05}_{src_scene_id}"
-                    if src_scene_id[0] == "0": # src fcf
-                        src_pos_i = random.randint(1, 4)
-                        src_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/images/{src_filename_base}_{src_pos_i}.jpg"
-                        src_bbox_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/annotations/bbox/{src_filename_base}_{src_pos_i}_bbox.txt"
-                        src_mask_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/annotations/masks/{src_filename_base}_{src_pos_i}_mask.jpg"
-                    elif src_scene_id[0] == "1": # src fo
-                        src_img_path = f"{root_dir}/{obj_idx}/factual_only/images/{src_filename_base}_1.jpg"
-                        src_bbox_path = f"{root_dir}/{obj_idx}/factual_only/annotations/bbox/{src_filename_base}_1_bbox.txt"
-                        src_mask_path = f"{root_dir}/{obj_idx}/factual_only/annotations/masks/{src_filename_base}_1_mask.jpg"
-                    src_obj_img = Image.open(src_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
-                    break
-                except:
-                    src_scene_id = examples["src_scene_id"][i] # there may not exist other isp settings -> just use default isp 
-            # tgt
-            tgt_scene_id = examples["tgt_scene_id"][i][:-1] + str(random.randint(0,4)) # isp augmentation
-            while True:
-                try:
-                    tgt_filename_base = f"{obj_idx:05}_{tgt_scene_id}"
-                    # if tgt_scene_id[0] == "0": # tgt fcf
-                    bg_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/images/{tgt_filename_base}_0.jpg"
-                    tgt_pos_i = random.randint(1, 4)
-                    tgt_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/images/{tgt_filename_base}_{tgt_pos_i}.jpg"
-                    tgt_bbox_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/annotations/bbox/{tgt_filename_base}_{tgt_pos_i}_bbox.txt"
-                    # tgt_mask_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/annotations/masks/{tgt_filename_base}_{tgt_pos_i}_mask.jpg"
-                    tgt_scene_id = examples["tgt_scene_id"][i]
-                    tgt_img = Image.open(tgt_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
-                    break
-                except:
-                    tgt_scene_id = examples["tgt_scene_id"][i] # there may not exist other isp settings -> just use default isp 
+            root_dir = examples["root_dir"][i]
+            if examples["type"][i].lower() == "orida":
+                obj_idx = examples["obj_idx"][i]
+                # src
+                src_scene_id = examples["src_scene_id"][i][:-1] + str(random.randint(0,4)) # isp augmentation
+                while True:
+                    try:
+                        src_filename_base = f"{obj_idx:05}_{src_scene_id}"
+                        if src_scene_id[0] == "0": # src fcf
+                            src_pos_i = random.randint(1, 4)
+                            src_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/images/{src_filename_base}_{src_pos_i}.jpg"
+                            src_bbox_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/annotations/bbox/{src_filename_base}_{src_pos_i}_bbox.txt"
+                            src_mask_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{src_scene_id}/annotations/masks/{src_filename_base}_{src_pos_i}_mask.jpg"
+                        elif src_scene_id[0] == "1": # src fo
+                            src_img_path = f"{root_dir}/{obj_idx}/factual_only/images/{src_filename_base}_1.jpg"
+                            src_bbox_path = f"{root_dir}/{obj_idx}/factual_only/annotations/bbox/{src_filename_base}_1_bbox.txt"
+                            src_mask_path = f"{root_dir}/{obj_idx}/factual_only/annotations/masks/{src_filename_base}_1_mask.jpg"
+                        src_obj_img = Image.open(src_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
+                        break
+                    except:
+                        src_scene_id = examples["src_scene_id"][i] # there may not exist other isp settings -> just use default isp 
+                # tgt
+                tgt_scene_id = examples["tgt_scene_id"][i][:-1] + str(random.randint(0,4)) # isp augmentation
+                while True:
+                    try:
+                        tgt_filename_base = f"{obj_idx:05}_{tgt_scene_id}"
+                        # if tgt_scene_id[0] == "0": # tgt fcf
+                        bg_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/images/{tgt_filename_base}_0.jpg"
+                        tgt_pos_i = random.randint(1, 4)
+                        tgt_img_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/images/{tgt_filename_base}_{tgt_pos_i}.jpg"
+                        tgt_bbox_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/annotations/bbox/{tgt_filename_base}_{tgt_pos_i}_bbox.txt"
+                        # tgt_mask_path = f"{root_dir}/{obj_idx}/factual_counterfactual/{tgt_scene_id}/annotations/masks/{tgt_filename_base}_{tgt_pos_i}_mask.jpg"
+                        tgt_scene_id = examples["tgt_scene_id"][i]
+                        tgt_img = Image.open(tgt_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
+                        break
+                    except:
+                        tgt_scene_id = examples["tgt_scene_id"][i] # there may not exist other isp settings -> just use default isp 
 
-            src_obj_mask = Image.open(src_mask_path).convert("L").resize((img_len, img_len))
-            bg_img = Image.open(bg_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
+                src_obj_mask = Image.open(src_mask_path).convert("L").resize((img_len, img_len))
+                bg_img = Image.open(bg_img_path).convert("RGB").resize((img_len, img_len), resample=Image.BILINEAR)
 
-            # get annotations
-            with open(tgt_bbox_path, 'r') as f:
-                tgt_pos_bbox = f.read().strip()
-            with open(src_bbox_path, 'r') as f:
-                src_obj_bbox = f.read().strip()
-            tgt_pos_mask = reshape_image_to_tgt_pos(src_obj_mask, src_obj_bbox, tgt_pos_bbox, img_len)
+                # get annotations
+                with open(tgt_bbox_path, 'r') as f:
+                    tgt_pos_bbox = f.read().strip()
+                with open(src_bbox_path, 'r') as f:
+                    src_obj_bbox = f.read().strip()
+                tgt_pos_mask = reshape_image_to_tgt_pos(src_obj_mask, src_obj_bbox, tgt_pos_bbox, img_len)
 
-            # mix bg_img and src_obj img with tgt_pos_mask to make collage image
-            bg_img_np = np.array(bg_img)
-            reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_obj_img, src_obj_bbox, tgt_pos_bbox, img_len))
-            # reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_obj_img, src_obj_bbox, tgt_pos_bbox, img_len, margin=5))
-            tgt_mask_np = np.array(tgt_pos_mask)
-            in_img_np = np.where(tgt_mask_np > 1e-2, reshaped_src_img_np, bg_img_np)
-            in_img = Image.fromarray(in_img_np)
+                # mix bg_img and src_obj img with tgt_pos_mask to make collage image
+                bg_img_np = np.array(bg_img)
+                reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_obj_img, src_obj_bbox, tgt_pos_bbox, img_len))
+                # reshaped_src_img_np = np.array(reshape_image_to_tgt_pos(src_obj_img, src_obj_bbox, tgt_pos_bbox, img_len, margin=5))
+                tgt_mask_np = np.array(tgt_pos_mask)
+                in_img_np = np.where(tgt_mask_np > 1e-2, reshaped_src_img_np, bg_img_np)
+                in_img = Image.fromarray(in_img_np)
 
-            if examples["aug_crop"][i] > 0:
-                in_img = apply_crop(in_img, (int(img_len*(1-examples["aug_crop"][i])), int(img_len*(1-examples["aug_crop"][i]))))
-                tgt_img = apply_crop(tgt_img, (int(img_len*(1-examples["aug_crop"][i])), int(img_len*(1-examples["aug_crop"][i]))))
-                tgt_pos_mask = apply_crop(tgt_pos_mask, (int(img_len*(1-examples["aug_crop"][i])), int(img_len*(1-examples["aug_crop"][i]))))
-            if examples["aug_rotate"][i] > 0:
-                angle = random.uniform(-examples["aug_rotate"][i], examples["aug_rotate"][i])
-                in_img = apply_rotation(in_img, angle)
-                tgt_img = apply_rotation(tgt_img, angle)
-                tgt_pos_mask = apply_rotation(tgt_pos_mask, angle)
-            if examples["aug_brightness"][i] + examples["aug_contrast"][i] + examples["aug_saturation"][i] + examples["aug_hue"][i] > 1e-2:
-                color_jitter = transforms.ColorJitter(
-                    brightness=examples["aug_brightness"][i], 
-                    contrast=examples["aug_contrast"][i], 
-                    saturation=examples["aug_saturation"][i], 
-                    hue=examples["aug_hue"][i]
-                )
-                jitter_params = color_jitter.get_params(
-                    color_jitter.brightness, 
-                    color_jitter.contrast, 
-                    color_jitter.saturation, 
-                    color_jitter.hue
-                )
-                in_img = apply_color_jitter(in_img, jitter_params)
-                tgt_img = apply_color_jitter(tgt_img, jitter_params)
-            
-            # processed_examples["input_pixel_values"].append(image_transforms(in_img))
-            # processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
+                if examples["aug_crop"][i] > 0:
+                    in_img = apply_crop(in_img, (int(img_len*(1-examples["aug_crop"][i])), int(img_len*(1-examples["aug_crop"][i]))))
+                    tgt_img = apply_crop(tgt_img, (int(img_len*(1-examples["aug_crop"][i])), int(img_len*(1-examples["aug_crop"][i]))))
+                    tgt_pos_mask = apply_crop(tgt_pos_mask, (int(img_len*(1-examples["aug_crop"][i])), int(img_len*(1-examples["aug_crop"][i]))))
+                if examples["aug_rotate"][i] > 0:
+                    angle = random.uniform(-examples["aug_rotate"][i], examples["aug_rotate"][i])
+                    in_img = apply_rotation(in_img, angle)
+                    tgt_img = apply_rotation(tgt_img, angle)
+                    tgt_pos_mask = apply_rotation(tgt_pos_mask, angle)
+                if examples["aug_brightness"][i] + examples["aug_contrast"][i] + examples["aug_saturation"][i] + examples["aug_hue"][i] > 1e-2:
+                    color_jitter = transforms.ColorJitter(
+                        brightness=examples["aug_brightness"][i], 
+                        contrast=examples["aug_contrast"][i], 
+                        saturation=examples["aug_saturation"][i], 
+                        hue=examples["aug_hue"][i]
+                    )
+                    jitter_params = color_jitter.get_params(
+                        color_jitter.brightness, 
+                        color_jitter.contrast, 
+                        color_jitter.saturation, 
+                        color_jitter.hue
+                    )
+                    in_img = apply_color_jitter(in_img, jitter_params)
+                    tgt_img = apply_color_jitter(tgt_img, jitter_params)
+                
+                # Mask dilation?
+                kernel = np.ones((5, 5), np.uint8) 
+                tgt_mask_np = cv2.dilate(cv2.GaussianBlur(tgt_mask_np, (3, 3), 0), kernel, iterations=3)
+                tgt_mask = Image.fromarray(tgt_mask_np)
 
-            # Mask dilation
-            kernel = np.ones((5, 5), np.uint8) 
-            tgt_mask_np = cv2.dilate(cv2.GaussianBlur(tgt_mask_np, (3, 3), 0), kernel, iterations=3)
-            tgt_mask = Image.fromarray(tgt_mask_np)
+                processed_examples["input_pixel_values"].append(image_transforms(in_img))
+                processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
+                processed_examples["conditioning_pixel_values"].append(conditioning_image_transforms(tgt_pos_mask.convert("L")))
+            else: # coco
+                root_dir = examples["root_dir"][i]
+                img_name = f"COCO_train2014_{int(examples['tgt_scene_id'][i]):012}.jpg"
+                img = Image.open(f"{root_dir}/train2014/{img_name}").convert("RGB") # TODO: path
 
-            processed_examples["input_pixel_values"].append(image_transforms(in_img))
-            processed_examples["output_pixel_values"].append(image_transforms(tgt_img))
-            processed_examples["conditioning_pixel_values"].append(conditioning_image_transforms(tgt_pos_mask))
+                mask_points = coco_annotations[examples["obj_idx"][i]]["segmentation"]
+                mask = create_mask_from_segmentation(mask_points, img.size)
+                mask_image = Image.fromarray(mask * 255)
+                
+                processed_examples["input_pixel_values"].append(image_transforms(img))
+                processed_examples["output_pixel_values"].append(image_transforms(img))
+                processed_examples["conditioning_pixel_values"].append(conditioning_image_transforms(mask_image))
+
+                # TODO: DELETE THIS
+                if len(os.listdir("tmp_vis")) < 100:
+                    img.save(f"tmp_vis/{examples['tgt_scene_id'][i]}.jpg")
+                    mask_image.save(f"tmp_vis/{examples['tgt_scene_id'][i]}_mask.jpg")
 
         processed_examples["input_ids"] = tokenize_captions(examples) # TODO: [Validation] sanity check needed
 
@@ -1157,7 +1230,7 @@ def make_train_dataset(args, tokenizer, accelerator):
         ]
     )
     
-    data_paths = get_data_paths(args.train_data_dir)
+    data_paths = get_data_paths(args.train_data_dir, args.train_data_sub_dir)
     dataset = Dataset.from_list(data_paths)
 
     with accelerator.main_process_first():
