@@ -218,7 +218,7 @@ def log_validation(
 
     # if len(args.validation_image) == len(args.validation_prompt): # original
     # if len(args.validation_src_dir) == len(args.validation_tgt_dir):
-    validation_src_dir = args.validation_src_dir
+    # validation_src_dir = args.validation_src_dir
     validation_tgt_dir = args.validation_tgt_dir
     validation_prompts = args.validation_prompt
     # elif len(args.validation_image) == 1:
@@ -240,7 +240,7 @@ def log_validation(
     for validation_input_image in validation_input_images:
         validation_prompt = ""
 
-        validation_bg_image = f"{validation_tgt_dir}/{validation_input_image.split('.jpg')[0][:-2]}_0.jpg"
+        # validation_bg_image = f"{validation_tgt_dir}/{validation_input_image.split('.jpg')[0][:-2]}_0.jpg"
         validation_obj_mask = f"{validation_tgt_dir}/{validation_input_image.split('.jpg')[0]}_mask.jpg"
         validation_input_image = f"{validation_tgt_dir}/{validation_input_image}"
         
@@ -276,7 +276,7 @@ def log_validation(
         image_logs.append(
             {"images1": images1,
             #  "images2": images2,
-             "validation_bg_image": validation_bg_image,  
+            #  "validation_bg_image": validation_bg_image,  
              "validation_input_image": validation_input_image, 
              "validation_obj_mask": validation_obj_mask, 
              "validation_prompt": validation_prompt}
@@ -288,13 +288,13 @@ def log_validation(
             for log in image_logs:
                 images1 = log["images1"]
                 # images2 = log["images2"]
-                validation_bg_image = log["validation_bg_image"]
+                # validation_bg_image = log["validation_bg_image"]
                 validation_input_image = log["validation_input_image"]
                 validation_obj_mask = log["validation_obj_mask"]
                 validation_prompt = log["validation_prompt"]
 
                 formatted_images = []
-                formatted_images.append(np.asarray(validation_bg_image))
+                # formatted_images.append(np.asarray(validation_bg_image))
                 formatted_images.append(np.asarray(validation_input_image))
                 formatted_images.append(np.asarray(validation_obj_mask))
 
@@ -312,12 +312,12 @@ def log_validation(
             for log in image_logs:
                 images1 = log["images1"]
                 # images2 = log["images2"]
-                validation_bg_image = log["validation_bg_image"]
+                # validation_bg_image = log["validation_bg_image"]
                 validation_input_image = log["validation_input_image"]
                 validation_obj_mask = log["validation_obj_mask"]
                 validation_prompt = log["validation_prompt"]
 
-                formatted_images.append(wandb.Image(validation_bg_image, caption="validation_bg_image"))
+                # formatted_images.append(wandb.Image(validation_bg_image, caption="validation_bg_image"))
                 formatted_images.append(wandb.Image(validation_input_image, caption="validation_input_image"))
                 formatted_images.append(wandb.Image(validation_obj_mask, caption="validation_obj_mask"))
 
