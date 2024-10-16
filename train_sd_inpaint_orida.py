@@ -245,7 +245,7 @@ def log_validation(
         validation_input_image = f"{validation_tgt_dir}/{validation_input_image}"
         
         validation_input_image = Image.open(validation_input_image).convert("RGB").resize((args.resolution, args.resolution), resample=Image.BILINEAR)
-        validation_bg_image = Image.open(validation_bg_image).convert("RGB").resize((args.resolution, args.resolution), resample=Image.BILINEAR)
+        # validation_bg_image = Image.open(validation_bg_image).convert("RGB").resize((args.resolution, args.resolution), resample=Image.BILINEAR)
         validation_obj_mask = Image.open(validation_obj_mask).convert("RGB").resize((args.resolution, args.resolution))
         
         images1 = []
