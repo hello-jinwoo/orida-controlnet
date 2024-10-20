@@ -985,9 +985,11 @@ def create_mask_from_segmentation(segmentation, image_size):
     mask = Image.new('L', image_size, 0)  # 'L' mode for grayscale (8-bit pixels)
     draw = ImageDraw.Draw(mask)
     # Draw the polygon(s) from the segmentation on the mask
-    for segment in segmentation:
-        polygon = [(segment[i], segment[i + 1]) for i in range(0, len(segment), 2)]
-        draw.polygon(polygon, outline=1, fill=1)  # Fill the polygon with white (1)
+    # for segment in segmentation:
+    #     polygon = [(segment[i], segment[i + 1]) for i in range(0, len(segment), 2)]
+    #     draw.polygon(polygon, outline=1, fill=1)  # Fill the polygon with white (1)
+    polygon = [(segmentation[i], segmentation[i + 1]) for i in range(0, len(segmentation), 2)]
+    draw.polygon(polygon, outline=1, fill=1)  # Fill the polygon with white (1)
     # Convert the mask to a NumPy array if needed
     mask_array = np.array(mask)
     return mask_array
@@ -1041,33 +1043,35 @@ def make_train_dataset(args, tokenizer, accelerator):
                         "text": obj_prompt,
                     })
         
-        # if sub_dir: # coco
-        #     global coco_annotations # TODO:
-        #     with open(f"{sub_dir}/annotations/instances_train2014.json") as f: # TODO: train? val? test?
-        #         coco_annotations = json.load(f)['annotations']
-        #     n_added = 0
-        #     for i, annotation in enumerate(coco_annotations):
-        #         if n_added >= args.num_data_sub:
-        #             break
-        #         if annotation['area'] < 5000: # filter by mask size 
-        #             continue
-        #         image_id = annotation['image_id']                    
-        #         data_list.append({
-        #             "type": "coco",
-        #             "root_dir": sub_dir, 
-        #             "obj_idx": i, # in coco, use obj_idx as annotation index 
-        #             "src_scene_id": str(image_id), 
-        #             "tgt_scene_id": str(image_id), 
-        #             "img_size": args.resolution,
-        #             "aug_crop": args.train_aug_crop*random.random(),
-        #             "aug_rotate": int(args.train_aug_rotate*random.random()),
-        #             "aug_brightness": args.train_aug_brightness,
-        #             "aug_saturation": args.train_aug_saturation,
-        #             "aug_contrast": args.train_aug_contrast,
-        #             "aug_hue": args.train_aug_hue,
-        #             "text": "",
-        #         })
-        #         n_added += 1
+        if sub_dir: # coco
+            global coco_annotations # TODO:
+            with open(f"{sub_dir}/annotations/instances_train2014.json") as f: # TODO: train? val? test?
+                coco_annotations = json.load(f)['annotations']
+            n_added = 0
+            for i, annotation in enumerate(coco_annotations):
+                if n_added >= args.num_data_sub:
+                    break
+                if annotation['area'] < 5000: # filter by mask size 
+                    continue
+                if type(annotation["segmentation"]) != list or len(annotation["segmentation"]) < 1:
+                    continue
+                image_id = annotation['image_id']                    
+                data_list.append({
+                    "type": "coco",
+                    "root_dir": sub_dir, 
+                    "obj_idx": i, # in coco, use obj_idx as annotation index 
+                    "src_scene_id": str(image_id), 
+                    "tgt_scene_id": str(image_id), 
+                    "img_size": args.resolution,
+                    "aug_crop": args.train_aug_crop*random.random(),
+                    "aug_rotate": int(args.train_aug_rotate*random.random()),
+                    "aug_brightness": args.train_aug_brightness,
+                    "aug_saturation": args.train_aug_saturation,
+                    "aug_contrast": args.train_aug_contrast,
+                    "aug_hue": args.train_aug_hue,
+                    "text": "",
+                })
+                n_added += 1
 
         random.shuffle(data_list) # due to the issue in diffusers shuffle
         return data_list
@@ -1195,8 +1199,8 @@ def make_train_dataset(args, tokenizer, accelerator):
                 root_dir = examples["root_dir"][i]
                 img_name = f"COCO_train2014_{int(examples['tgt_scene_id'][i]):012}.jpg"
                 img = Image.open(f"{root_dir}/train2014/{img_name}").convert("RGB") # TODO: path
-
-                mask_points = coco_annotations[examples["obj_idx"][i]]["segmentation"]
+                
+                mask_points = coco_annotations[examples["obj_idx"][i]]["segmentation"][0]
                 mask = create_mask_from_segmentation(mask_points, img.size)
                 mask_image = Image.fromarray(mask * 255)
                 
