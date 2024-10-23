@@ -730,6 +730,13 @@ def parse_args(input_args=None):
         type=int,
         default=0,
     )
+
+    parser.add_argument(
+        "--ratio_data_sub",
+        type=float,
+        default=0.0,
+    )
+
     parser.add_argument(
         "--image_column", type=str, default="image", help="The column of the dataset containing the target image."
     )
@@ -1042,8 +1049,8 @@ def make_train_dataset(args, tokenizer, accelerator):
                         "aug_hue": args.train_aug_hue,
                         "text": obj_prompt,
                     })
-        
-        if sub_dir: # coco
+        sub_data_list = []
+        if sub_dir and args.num_data_sub > 0 and args.ratio_data_sub > 1e-6: # coco
             global coco_annotations # TODO:
             with open(f"{sub_dir}/annotations/instances_train2014.json") as f: # TODO: train? val? test?
                 coco_annotations = json.load(f)['annotations']
@@ -1051,12 +1058,12 @@ def make_train_dataset(args, tokenizer, accelerator):
             for i, annotation in enumerate(coco_annotations):
                 if n_added >= args.num_data_sub:
                     break
-                if annotation['area'] < 5000: # filter by mask size 
+                if annotation['area'] < 3000: # filter by mask size 
                     continue
                 if type(annotation["segmentation"]) != list or len(annotation["segmentation"]) < 1:
                     continue
                 image_id = annotation['image_id']                    
-                data_list.append({
+                sub_data_list.append({
                     "type": "coco",
                     "root_dir": sub_dir, 
                     "obj_idx": i, # in coco, use obj_idx as annotation index 
@@ -1072,7 +1079,17 @@ def make_train_dataset(args, tokenizer, accelerator):
                     "text": "",
                 })
                 n_added += 1
-
+                
+            sub_data_size = int(len(data_list) * args.ratio_data_sub)
+            if len(sub_data_list) > sub_data_size:
+                sub_data_list = sub_data_list[sub_data_size]
+            else:
+                sub_data_list *= sub_data_size // len(sub_data_list)
+                sub_data_list += sub_data_list[:sub_data_size - len(sub_data_list)]
+        
+        print(f"### ORIDa: {len(data_list)} images ###")
+        print(f"### COCO: {len(sub_data_list)} images ###")
+        data_list = data_list + sub_data_list
         random.shuffle(data_list) # due to the issue in diffusers shuffle
         return data_list
 
