@@ -242,6 +242,7 @@ def log_validation(
 
         # validation_bg_image = f"{validation_tgt_dir}/{validation_input_image.split('.jpg')[0][:-2]}_0.jpg"
         validation_obj_mask = f"{validation_tgt_dir}/{validation_input_image.split('.jpg')[0]}_mask.jpg"
+        validation_input_image_ = f"{validation_input_image}"
         validation_input_image = f"{validation_tgt_dir}/{validation_input_image}"
         
         validation_input_image = Image.open(validation_input_image).convert("RGB").resize((args.resolution, args.resolution), resample=Image.BILINEAR)
@@ -329,6 +330,17 @@ def log_validation(
                 #     formatted_images.append(image2)
 
             tracker.log({tracker_key: formatted_images})
+
+            # # TMP
+            # save_dir = f"{args.output_dir}/output"
+            # os.makedirs(save_dir, exist_ok=True)
+            # validation_input_image.save(f"{save_dir}/{validation_input_image_[:-4]}_input.jpg")
+            # validation_obj_mask.save(f"{save_dir}/{validation_input_image_[:-4]}_mask.jpg")
+            # for i, image1 in enumerate(images1):
+            #     image1.save(f"{save_dir}/{validation_input_image_[:-4]}_output_{i}.jpg")
+            # print(f"!!! {validation_input_image_[:-4]} saved in {save_dir} !!!")
+
+            
         else:
             logger.warning(f"image logging not implemented for {tracker.name}")
 
