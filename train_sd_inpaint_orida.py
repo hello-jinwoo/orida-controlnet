@@ -75,6 +75,9 @@ from datasets import Dataset
 import cv2
 # import pyvips 
 
+# Unable Timeout
+os.environ['NCCL_BLOCKING_WAIT'] = '0'  # not to enforce timeout
+
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.31.0.dev0")
 
@@ -1226,7 +1229,7 @@ def make_train_dataset(args, tokenizer, accelerator):
                 processed_examples["conditioning_pixel_values"].append(conditioning_image_transforms(mask_image))
 
                 # TODO: DELETE THIS
-                if len(os.listdir("tmp_vis")) < 100:
+                if len(os.listdir("tmp_vis")) < 1000:
                     img.save(f"tmp_vis/{examples['tgt_scene_id'][i]}.jpg")
                     mask_image.save(f"tmp_vis/{examples['tgt_scene_id'][i]}_mask.jpg")
 
@@ -1294,7 +1297,15 @@ def main(args):
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
 
+    # handling timeout issue
+    from accelerate import InitProcessGroupKwargs
+    from datetime import timedelta
+    ipg_handler = InitProcessGroupKwargs(
+        timeout=timedelta(seconds=5400)
+    )
+
     accelerator = Accelerator(
+        kwargs_handlers=[ipg_handler],
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
