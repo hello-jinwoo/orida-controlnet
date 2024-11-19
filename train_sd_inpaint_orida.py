@@ -735,9 +735,17 @@ def parse_args(input_args=None):
     )
 
     parser.add_argument(
+        "--ratio_data_main",
+        type=float,
+        default=1.0,
+        help="ratio of data usage of main (ORIDa)"
+    )
+
+    parser.add_argument(
         "--ratio_data_sub",
         type=float,
         default=0.0,
+        help="ratio of data_sub (COCO) to the data_main (ORIDa)"
     )
 
     parser.add_argument(
@@ -1052,6 +1060,10 @@ def make_train_dataset(args, tokenizer, accelerator):
                         "aug_hue": args.train_aug_hue,
                         "text": obj_prompt,
                     })
+        random.shuffle(data_list)
+        if args.ratio_data_main < 1.0:
+            data_list = data_list[:int(len(data_list) * args.ratio_data_main)]
+
         sub_data_list = []
         if sub_dir and args.num_data_sub > 0 and args.ratio_data_sub > 1e-6: # coco
             global coco_annotations # TODO:
@@ -1085,7 +1097,7 @@ def make_train_dataset(args, tokenizer, accelerator):
                 
             sub_data_size = int(len(data_list) * args.ratio_data_sub)
             if len(sub_data_list) > sub_data_size:
-                sub_data_list = sub_data_list[sub_data_size]
+                sub_data_list = sub_data_list[:sub_data_size]
             else:
                 sub_data_list *= sub_data_size // len(sub_data_list)
                 sub_data_list += sub_data_list[:sub_data_size - len(sub_data_list)]
