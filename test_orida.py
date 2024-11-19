@@ -206,7 +206,7 @@ def get_concat_v(im1, im2):
 def validation(
     vae, text_encoder, tokenizer, unet, args, weight_dtype
 ):
-  
+    unet.eval()
     pipeline = CustomStableDiffusionInpaintPipeline.from_pretrained(
         "runwayml/stable-diffusion-inpainting", 
         vae=vae,
@@ -297,7 +297,9 @@ def validation(
         vis_image_inputs = get_concat_h(vis_image_inputs, validation_srb_obj_image)
 
         # for i in range(args.num_validation_images):
-        for i in range(5): # to fit the visualize results, set num_validation_images == 4
+        vis_image_outputs_list = []
+        n_outputs = args.n_outputs
+        for i in range(n_outputs): # to fit the visualize results, set num_validation_images == 4
             with inference_ctx:
                 result_image = pipeline(
                     num_inference_steps=args.validation_num_inference_steps,
@@ -307,35 +309,36 @@ def validation(
                     mask_image=validation_tgt_mask,
                     masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
                     ip_adapter_image=validation_srb_obj_image,
+                    cosine_scale_1=args.sr_cosine_scale_1,
+                    sr_option=args.sr_option,
                     cross_attention_kwargs={"ip_adapter_masks": ip_adapter_masks},
                     generator=generator
                 ).images[0]
-                if i == 0:
-                    vis_image_outputs1 = result_image.copy()
+                if i % 5 == 0:
+                    vis_image_outputs_list.append(result_image.copy())
                 else:
-                    vis_image_outputs1 = get_concat_h(vis_image_outputs1, result_image)
-        # for i in range(5): # to fit the visualize results, set num_validation_images == 4
-        #     with inference_ctx:
-        #         result_image = pipeline(
-        #             custom_unet=unet,
-        #             custom_unet_init_timestep=args.denoising_init_timestep,
-        #             custom_unet_end_timestep=args.denoising_end_timestep,
-        #             num_inference_steps=args.validation_num_inference_steps,
-        #             prompt=validation_prompt, 
-        #             image=validation_input_image, # v0.1~v0.6, v0.7??
-        #             # image=validation_tgt_image, # v0.7??
-        #             mask_image=validation_tgt_mask,
-        #             masked_image_latents=vae.encode(VaeImageProcessor().preprocess(validation_input_image).to(vae.device)).latent_dist.sample() * vae.config.scaling_factor, 
-        #             ip_adapter_image=validation_input_image, # TODO : change ?
-        #             generator=generator
-        #         ).images[0]
-        #         if i == 0:
-        #             vis_image_outputs2 = result_image.copy()
-        #         else:
-        #             vis_image_outputs2 = get_concat_h(vis_image_outputs2, result_image)
+                    vis_image_outputs_list[i//5] = get_concat_h(vis_image_outputs_list[i//5], result_image)
+                # elif 0 < i < 5:
+                #     vis_image_outputs1 = get_concat_h(vis_image_outputs1, result_image)
+                # elif i == 5:
+                #     vis_image_outputs2 = result_image.copy()
+                # elif 5 < i < 10:
+                #     vis_image_outputs2 = get_concat_h(vis_image_outputs2, result_image)
+                # elif i == 10:
+                #     vis_image_outputs3 = result_image.copy()
+                # elif 10 < i < 15:
+                #     vis_image_outputs3 = get_concat_h(vis_image_outputs3, result_image)
+                # elif i == 15:
+                #     vis_image_outputs4 = result_image.copy()
+                # elif 15 < i < 20:
+                #     vis_image_outputs4 = get_concat_h(vis_image_outputs4, result_image)        
 
-        vis_image_final = get_concat_v(vis_image_inputs, vis_image_outputs1)
+        vis_image_final = vis_image_inputs
+        for i in range (n_outputs // 5):
+            vis_image_final = get_concat_v(vis_image_final, vis_image_outputs_list[i])
         # vis_image_final = get_concat_v(vis_image_final, vis_image_outputs2)
+        # vis_image_final = get_concat_v(vis_image_final, vis_image_outputs3)
+        # vis_image_final = get_concat_v(vis_image_final, vis_image_outputs4)
         os.makedirs(args.output_dir, exist_ok=True)
         vis_image_final.save(f"{args.output_dir}/{vis_name}")
 
@@ -560,11 +563,31 @@ def parse_args(input_args=None):
         default=1,
         help="Number of images to be generated for each `--validation_image`, `--validation_prompt` pair",
     )
+    parser.add_argument(
+        "--n_outputs",
+        type=int,
+        default=5,
+        help="",
+    )
 
     parser.add_argument(
         "--ip_adapter_scale",
         type=float,
         default=0.0,
+        help="",
+    )
+
+    parser.add_argument(
+        "--sr_cosine_scale_1",
+        type=float,
+        default=101.0,
+        help="if this value > 100, SR will not be activated, convention value is 3.0",
+    )
+
+    parser.add_argument(
+        "--sr_option",
+        type=str,
+        default="",
         help="",
     )
 

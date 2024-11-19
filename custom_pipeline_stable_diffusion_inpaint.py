@@ -293,6 +293,9 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
+        ### CUSTOM PART ###
+        cosine_scale_1: float = 101.0, # for SR (Skip Residual) # if this value > 100 SR will not be activated
+        # sr_option: str = "",
         **kwargs,
     ):
         r"""
@@ -556,6 +559,8 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
         num_channels_latents = self.vae.config.latent_channels
         num_channels_unet = self.unet.config.in_channels
         return_image_latents = num_channels_unet == 4
+        if cosine_scale_1 < 100:
+            return_image_latents = True # TODO
 
         latents_outputs = self.prepare_latents(
             batch_size * num_images_per_prompt,
@@ -636,6 +641,16 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
                 guidance_scale_tensor, embedding_dim=self.unet.config.time_cond_proj_dim
             ).to(device=device, dtype=latents.dtype)
 
+        # 10.0. Make noisy latents for SR connection
+        if cosine_scale_1 < 100:
+            noise_latents = []
+            # noise = torch.randn_like(latents)
+            for timestep in timesteps:
+                # noise_latent = self.scheduler.add_noise(latents, noise, timestep.unsqueeze(0))
+                noise_latent = self.scheduler.add_noise(image_latents, noise, timestep.unsqueeze(0))
+                noise_latents.append(noise_latent)
+            # latents = noise_latents[0]
+
         # 10. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
@@ -643,6 +658,12 @@ class CustomStableDiffusionInpaintPipeline(StableDiffusionInpaintPipeline):
             for i, t in enumerate(timesteps): # t = [980, 960, ..., 0] if num_inference_steps==50
                 if self.interrupt:
                     continue
+
+                # SR (Skip Residual)
+                if cosine_scale_1 < 100:
+                    cosine_factor = 0.5 * (1 + torch.cos(torch.pi * (self.scheduler.config.num_train_timesteps - t) / self.scheduler.config.num_train_timesteps)).cpu()
+                    c1 = cosine_factor ** cosine_scale_1 
+                    latents = latents * (1 - c1) + noise_latents[i] * c1
 
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents

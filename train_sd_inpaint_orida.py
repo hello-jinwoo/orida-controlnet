@@ -1102,8 +1102,6 @@ def make_train_dataset(args, tokenizer, accelerator):
                 sub_data_list *= sub_data_size // len(sub_data_list)
                 sub_data_list += sub_data_list[:sub_data_size - len(sub_data_list)]
         
-        print(f"### ORIDa: {len(data_list)} images ###")
-        print(f"### COCO: {len(sub_data_list)} images ###")
         data_list = data_list + sub_data_list
         random.shuffle(data_list) # due to the issue in diffusers shuffle
         return data_list
